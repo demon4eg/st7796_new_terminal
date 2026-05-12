@@ -31,6 +31,13 @@ static lv_obj_t * speed_btnmatrix = NULL;
 static float last_vals[13] = {0};
 static lv_obj_t * coord_container = NULL;  // Coord container color
 
+// feedback from ROS to UI
+static lv_obj_t * work_value_label = NULL;
+static lv_obj_t * tool_value_label = NULL;
+static lv_obj_t * state_value_label = NULL;
+static lv_obj_t * mode_value_label = NULL;
+static lv_obj_t * speed_value_label = NULL;
+
 // Forward declarations for event callbacks
 static void dropdown_event_cb(lv_event_t * e);
 static void toggle_button_event_cb(lv_event_t * e);
@@ -203,10 +210,15 @@ void ui_create_robot_control(void)
     // 1. WORK OFFSETS
     dd_work = lv_dropdown_create(scr);
     lv_dropdown_set_options(dd_work, "BASE\nUSER1\nUSER2\nUSER3\nUSER4\nUSER5");
-    lv_obj_set_width(dd_work, 110);
+    lv_obj_set_width(dd_work, 100);
     lv_obj_set_style_text_font(dd_work, &lv_font_montserrat_14, 0);
-    lv_obj_align(dd_work, LV_ALIGN_TOP_RIGHT, -10, 25);
+    lv_obj_align(dd_work, LV_ALIGN_TOP_RIGHT, -30, 25);
     lv_obj_add_event_cb(dd_work, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    work_value_label = lv_label_create(scr);
+    lv_label_set_text(work_value_label, "[0]");
+    lv_obj_set_style_text_font(work_value_label, &lv_font_montserrat_12, 0);
+    lv_obj_align_to(work_value_label, dd_work, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_t * lbl_work = lv_label_create(scr);
     lv_label_set_text(lbl_work, "Work Offset:");
@@ -216,10 +228,15 @@ void ui_create_robot_control(void)
     // 2. TOOL ORIENTATION
     dd_tool = lv_dropdown_create(scr);
     lv_dropdown_set_options(dd_tool, "FLANGE\nTOOL1\nTOOL2\nTOOL3\nTOOL4\nTOOL5\n");
-    lv_obj_set_width(dd_tool, 110);
+    lv_obj_set_width(dd_tool, 100);
     lv_obj_set_style_text_font(dd_tool, &lv_font_montserrat_14, 0);
     lv_obj_align_to(dd_tool, dd_work, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
     lv_obj_add_event_cb(dd_tool, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    tool_value_label = lv_label_create(scr);
+    lv_label_set_text(tool_value_label, "[0]");
+    lv_obj_set_style_text_font(tool_value_label, &lv_font_montserrat_12, 0);
+    lv_obj_align_to(tool_value_label, dd_tool, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_t * lbl_tool = lv_label_create(scr);
     lv_label_set_text(lbl_tool, "Tool Orientation:");
@@ -230,10 +247,15 @@ void ui_create_robot_control(void)
     dd_state = lv_dropdown_create(scr);
     lv_dropdown_set_options(dd_state, "ESTOP\nIDLE\nTEACH\nJOG\nAUTO");
     lv_dropdown_set_selected(dd_state, 3);
-    lv_obj_set_width(dd_state, 110);
+    lv_obj_set_width(dd_state, 100);
     lv_obj_set_style_text_font(dd_state, &lv_font_montserrat_14, 0);
     lv_obj_align_to(dd_state, dd_tool, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
     lv_obj_add_event_cb(dd_state, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    state_value_label = lv_label_create(scr);
+    lv_label_set_text(state_value_label, "[JOG]");
+    lv_obj_set_style_text_font(state_value_label, &lv_font_montserrat_12, 0);
+    lv_obj_align_to(state_value_label, dd_state, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_t * lbl_state = lv_label_create(scr);
     lv_label_set_text(lbl_state, "Robot State:");
@@ -242,10 +264,15 @@ void ui_create_robot_control(void)
     
     // 4. MODE TOGGLE BUTTON
     mode_toggle_btn = lv_btn_create(scr);
-    lv_obj_set_size(mode_toggle_btn, 110, 30);
+    lv_obj_set_size(mode_toggle_btn, 100, 30);
     lv_obj_align_to(mode_toggle_btn, dd_state, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
     lv_obj_add_flag(mode_toggle_btn, LV_OBJ_FLAG_CHECKABLE);
     lv_obj_add_event_cb(mode_toggle_btn, toggle_button_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    mode_value_label = lv_label_create(scr);
+    lv_label_set_text(mode_value_label, "[JOINT]");
+    lv_obj_set_style_text_font(mode_value_label, &lv_font_montserrat_12, 0);
+    lv_obj_align_to(mode_value_label, mode_toggle_btn, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
@@ -270,6 +297,12 @@ void ui_create_robot_control(void)
     lv_obj_set_style_pad_all(speed_container, 0, 0);
     lv_obj_clear_flag(speed_container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_align(speed_container, LV_ALIGN_BOTTOM_LEFT, 5, -70);
+
+    speed_value_label = lv_label_create(speed_container);
+    lv_label_set_text(speed_value_label, "50%");
+    lv_obj_set_style_text_font(speed_value_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(speed_value_label, lv_color_hex(0x00FF00), 0);
+    lv_obj_align(speed_value_label, LV_ALIGN_TOP_RIGHT, -5, 10);
     
     lv_obj_t * speed_title = lv_label_create(speed_container);
     lv_label_set_text(speed_title, "Speed Override:");
@@ -297,12 +330,12 @@ void ui_create_robot_control(void)
     
     // 6. TERMINAL
     terminal = lv_textarea_create(scr);
-    lv_obj_set_size(terminal, 460, 60);
+    lv_obj_set_size(terminal, 330, 60);
     lv_obj_align(terminal, LV_ALIGN_BOTTOM_LEFT, 10, -5);
     lv_textarea_set_text(terminal, "ROS2 terminal ready...\n");
     lv_obj_set_style_text_font(terminal, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(terminal, lv_color_white(), 0);
-    lv_obj_set_style_bg_color(terminal, lv_color_black(), 0);
+    lv_obj_set_style_text_color(terminal, lv_color_black(), 0);
+    lv_obj_set_style_bg_color(terminal, lv_color_white(), 0);
     
     ESP_LOGI(TAG, "Robot control UI created");
 }
@@ -392,10 +425,10 @@ void ui_clear_screen(void)
 // Update container color based on robot state
 void ui_update_container_color(uint8_t state)
 {
-    ESP_LOGI(TAG, "Updating container color to state: %d", state);
+    //ESP_LOGI(TAG, "Updating container color to state: %d", state);
     
     if (coord_container == NULL) {
-        ESP_LOGW(TAG, "coord_container is NULL!");
+        //ESP_LOGW(TAG, "coord_container is NULL!");
         return;
     }
     
@@ -454,6 +487,51 @@ float ui_get_speed_override(void) {
         }
     }
     return 0.5f;
+}
+
+void ui_update_state_display(uint8_t state)
+{
+    if (state_value_label) {
+        const char *state_names[] = {"E", "I", "T", "J", "A"};
+        const char *state_name = (state < 5) ? state_names[state] : "UNKNOWN";
+        char buf[32];
+        snprintf(buf, sizeof(buf), "[%s]", state_name);
+        lv_label_set_text(state_value_label, buf);
+    }
+}
+
+void ui_update_work_display(uint8_t id)
+{
+    if (work_value_label) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "[%d]", id);
+        lv_label_set_text(work_value_label, buf);
+    }
+}
+
+void ui_update_tool_display(uint8_t id)
+{
+    if (tool_value_label) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "[%d]", id);
+        lv_label_set_text(tool_value_label, buf);
+    }
+}
+
+void ui_update_mode_display(bool cartesian)
+{
+    if (mode_value_label) {
+        lv_label_set_text(mode_value_label, cartesian ? "[C]" : "[J]");
+    }
+}
+
+void ui_update_speed_display(float speed)
+{
+    if (speed_value_label) {
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%.0f%%", speed * 100);
+        lv_label_set_text(speed_value_label, buf);
+    }
 }
 
 // Обновление из ROS
