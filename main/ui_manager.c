@@ -103,10 +103,27 @@ void ui_update_state_values(float *values, int count)
 {
     if (count > 13) count = 13;
     
+    // Define format for each value
+    const char *formats[] = {
+        "%1.3f",  // X (meters) - 0.000
+        "%1.3f",  // Y (meters) - 0.000
+        "%1.3f",  // Z (meters) - 0.000
+        "%1.3f",  // R (radians) - 0.00
+        "%1.3f",  // P (radians) - 0.00
+        "%1.3f",  // Y (radians) - 0.00
+        "%.1f",  // J1 (degrees) - 000.0
+        "%.1f",  // J2 (degrees) - 000.0
+        "%.1f",  // J3 (degrees) - 000.0
+        "%.1f",  // J4 (degrees) - 000.0
+        "%.1f",  // J5 (degrees) - 000.0
+        "%.1f",  // J6 (degrees) - 000.0
+        "%.3f"   // Gripper (meters) - 0.000
+    };
+    
     for (int i = 0; i < count; i++) {
-        if (state_labels[i] && fabs(values[i] - last_vals[i]) > 0.01f) {
+        if (state_labels[i] && fabs(values[i] - last_vals[i]) > 0.001f) {
             char buf[32];
-            snprintf(buf, sizeof(buf), "%.2f", values[i]);
+            snprintf(buf, sizeof(buf), formats[i], values[i]);
             lv_label_set_text(state_labels[i], buf);
             last_vals[i] = values[i];
         }
