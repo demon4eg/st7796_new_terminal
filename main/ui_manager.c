@@ -7,7 +7,6 @@
 #include <freertos/task.h>
 #include <lvgl.h>
 #include <math.h>
-#include <string.h>
 
 static const char *TAG = "ui_manager";
 
@@ -21,9 +20,9 @@ static lv_disp_draw_buf_t draw_buf;
 static lv_disp_drv_t disp_drv;
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
+static lv_obj_t *meter = NULL;
 static lv_style_t style_screen;
 
-// UI Elements
 static lv_obj_t * dd_work = NULL;
 static lv_obj_t * dd_tool = NULL;
 static lv_obj_t * dd_state = NULL;
@@ -31,133 +30,72 @@ static lv_obj_t * terminal = NULL;
 static lv_obj_t * state_labels[13] = {NULL};
 static lv_obj_t * mode_toggle_btn = NULL;
 static lv_obj_t * speed_btnmatrix = NULL;
-static lv_obj_t * estop_btn = NULL;
-static lv_obj_t * home_btn = NULL;
-static lv_obj_t * reset_btn = NULL;
-static lv_obj_t * save_btn = NULL;
-
-// State tracking
 static float last_vals[13] = {0};
-static uint8_t current_tool_id = 0;
-static uint8_t current_work_offset = 0;
-static uint8_t current_robot_state = 3; // JOG по умолчанию
-static uint8_t current_auto_state = 0;
-static bool current_cartesian_mode = false;
-static float current_speed_override = 50.0f; // 50% по умолчанию
-static bool current_estop = false;
-
-// Callback for ROS commands
-static ui_command_callback_t command_callback = NULL;
 
 // Forward declarations for event callbacks
 static void dropdown_event_cb(lv_event_t * e);
 static void toggle_button_event_cb(lv_event_t * e);
 static void speed_btnmatrix_event_cb(lv_event_t * e);
-static void estop_button_event_cb(lv_event_t * e);
-static void action_button_event_cb(lv_event_t * e);
 
-// ========== Event Handlers ==========
+static uint8_t current_tool_id = 0;
+static uint8_t current_work_offset = 0;
+static uint8_t current_robot_state = 3;
+static bool current_cartesian_mode = false;
+static float current_speed_override = 50.0f;
+static ui_command_callback_t command_callback = NULL;
 
+
+// Dropdown event handler
 static void dropdown_event_cb(lv_event_t * e) {
     lv_obj_t * dropdown = lv_event_get_target(e);
     int index = lv_dropdown_get_selected(dropdown);
     
-    if (dropdown == dd_work) {
-        ESP_LOGI(TAG, "Work offset changed to %d", index);
-        current_work_offset = index;
-        ui_send_command(CMD_TYPE_WORK_OFFSET, index, 0);
-    } else if (dropdown == dd_tool) {
-        ESP_LOGI(TAG, "Tool orientation changed to %d", index);
-        current_tool_id = index;
-        ui_send_command(CMD_TYPE_TOOL_ID, index, 0);
-    } else if (dropdown == dd_state) {
-        ESP_LOGI(TAG, "Robot state changed to %d", index);
-        current_robot_state = index;
-        ui_send_command(CMD_TYPE_STATE, index, 0);
+    if (command_callback) {
+        if (dropdown == dd_work) {
+            command_callback(1, index, 0);
+        } else if (dropdown == dd_tool) {
+            command_callback(2, index, 0);
+        } else if (dropdown == dd_state) {
+            command_callback(3, index, 0);
+        }
     }
 }
 
+// Toggle button event handler
 static void toggle_button_event_cb(lv_event_t * e) {
     if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
     
     lv_obj_t * btn = lv_event_get_target(e);
     bool is_toggled = lv_obj_has_state(btn, LV_STATE_CHECKED);
     
-    current_cartesian_mode = is_toggled;
-    const char *mode = is_toggled ? "CART" : "JOINT";
-    ESP_LOGI(TAG, "Control mode changed to %s", mode);
-    
     lv_obj_t *btn_label = lv_obj_get_child(btn, 0);
-    lv_label_set_text(btn_label, mode);
+    lv_label_set_text(btn_label, is_toggled ? "CART" : "JOINT");
     
-    ui_send_command(CMD_TYPE_CARTESIAN_MODE, is_toggled ? 1 : 0, 0);
+    if (command_callback) {
+        command_callback(5, is_toggled ? 1 : 0, 0);
+    }
 }
 
+// Speed button matrix event handler
 static void speed_btnmatrix_event_cb(lv_event_t * e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
     
-    if (code == LV_EVENT_VALUE_CHANGED) {
-        lv_obj_t * btnm = lv_event_get_target(e);
-        uint32_t id = lv_btnmatrix_get_selected_btn(btnm);
-        
-        if (id <= 4) {
-            float speed_percent = id * 25.0f;
-            ESP_LOGI(TAG, "Speed changed to %.0f%%", speed_percent);
-            current_speed_override = speed_percent;
-            ui_send_command(CMD_TYPE_SPEED_OVERRIDE, 0, speed_percent / 100.0f);
-        }
+    lv_obj_t * btnm = lv_event_get_target(e);
+    uint32_t id = lv_btnmatrix_get_selected_btn(btnm);
+    
+    if (id <= 4 && command_callback) {
+        float speed_percent = id * 25.0f;
+        command_callback(6, 0, speed_percent / 100.0f);
     }
 }
 
-static void estop_button_event_cb(lv_event_t * e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    
-    current_estop = !current_estop;
-    ESP_LOGI(TAG, "ESTOP %s", current_estop ? "ACTIVATED" : "RELEASED");
-    
-    // Change button color based on state
-    if (current_estop) {
-        lv_obj_set_style_bg_color(estop_btn, lv_palette_main(LV_PALETTE_RED), 0);
-        lv_obj_t *btn_label = lv_obj_get_child(estop_btn, 0);
-        lv_label_set_text(btn_label, "STOP");
-    } else {
-        lv_obj_set_style_bg_color(estop_btn, lv_palette_main(LV_PALETTE_GREEN), 0);
-        lv_obj_t *btn_label = lv_obj_get_child(estop_btn, 0);
-        lv_label_set_text(btn_label, "ESTOP");
-    }
-    
-    ui_send_command(CMD_TYPE_ESTOP, current_estop ? 1 : 0, 0);
-}
-
-static void action_button_event_cb(lv_event_t * e)
-{
-    if (lv_event_get_code(e) != LV_EVENT_CLICKED) return;
-    
-    lv_obj_t * btn = lv_event_get_target(e);
-    
-    if (btn == home_btn) {
-        ESP_LOGI(TAG, "Home action triggered");
-        ui_send_command(CMD_TYPE_ACTION_TRIGGER, 1, 0);
-    } else if (btn == reset_btn) {
-        ESP_LOGI(TAG, "Reset errors action triggered");
-        ui_send_command(CMD_TYPE_ACTION_TRIGGER, 2, 0);
-    } else if (btn == save_btn) {
-        ESP_LOGI(TAG, "Save point action triggered");
-        ui_send_command(CMD_TYPE_ACTION_TRIGGER, 3, 0);
-    }
-}
-
-// ========== Public Functions for UI Updates ==========
-
+// Public functions for updating UI from micro-ros
 void ui_set_terminal_text(const char *text)
 {
     if (terminal) {
         lv_textarea_add_text(terminal, text);
         lv_textarea_set_cursor_pos(terminal, LV_TEXTAREA_CURSOR_LAST);
-        // Просто скроллим вниз - убрать проверку lv_textarea_get_line_height
-        lv_obj_scroll_to_y(terminal, LV_COORD_MAX, LV_ANIM_OFF);
     }
 }
 
@@ -177,40 +115,33 @@ void ui_update_state_values(float *values, int count)
 
 void ui_set_work_offset(int index)
 {
-    if (dd_work && index != current_work_offset) {
+    if (dd_work) {
         lv_dropdown_set_selected(dd_work, index);
-        current_work_offset = index;
     }
 }
 
 void ui_set_tool_orientation(int index)
 {
-    if (dd_tool && index != current_tool_id) {
+    if (dd_tool) {
         lv_dropdown_set_selected(dd_tool, index);
-        current_tool_id = index;
     }
 }
 
 void ui_set_robot_state(int index)
 {
-    if (dd_state && index != current_robot_state) {
+    if (dd_state) {
         lv_dropdown_set_selected(dd_state, index);
-        current_robot_state = index;
     }
 }
 
 void ui_set_control_mode(bool is_cartesian)
 {
-    if (mode_toggle_btn && is_cartesian != current_cartesian_mode) {
+    if (mode_toggle_btn) {
         if (is_cartesian) {
             lv_obj_add_state(mode_toggle_btn, LV_STATE_CHECKED);
         } else {
             lv_obj_clear_state(mode_toggle_btn, LV_STATE_CHECKED);
         }
-        current_cartesian_mode = is_cartesian;
-        
-        lv_obj_t *btn_label = lv_obj_get_child(mode_toggle_btn, 0);
-        lv_label_set_text(btn_label, is_cartesian ? "CART" : "JOINT");
     }
 }
 
@@ -224,123 +155,16 @@ void ui_set_speed(float percent)
     }
 }
 
-// ========== ROS Integration Functions ==========
-
-uint8_t ui_get_tool_id(void)
-{
-    return current_tool_id;
-}
-
-uint8_t ui_get_work_offset_id(void)
-{
-    return current_work_offset;
-}
-
-uint8_t ui_get_robot_state(void)
-{
-    return current_robot_state;
-}
-
-uint8_t ui_get_auto_state(void)
-{
-    return current_auto_state;
-}
-
-bool ui_get_cartesian_mode(void)
-{
-    return current_cartesian_mode;
-}
-
-float ui_get_speed_override(void)
-{
-    return current_speed_override / 100.0f; // Convert to 0.0-1.0
-}
-
-bool ui_get_estop_state(void)
-{
-    return current_estop;
-}
-
-void ui_register_command_callback(ui_command_callback_t callback)
-{
-    command_callback = callback;
-    ESP_LOGI(TAG, "Command callback registered");
-}
-
-void ui_send_command(ui_command_type_t type, int id, float value)
-{
-    if (command_callback) {
-        command_callback((int)type, id, value);
-    } else {
-        ESP_LOGW(TAG, "No command callback registered, command dropped");
-    }
-}
-
-void ui_update_telemetry(float *values, int count, uint8_t state, 
-                        uint8_t tool_id, uint8_t work_offset_id, 
-                        bool cartesian_mode, float speed_override)
-{
-    // Update state variables
-    current_robot_state = state;
-    current_tool_id = tool_id;
-    current_work_offset = work_offset_id;
-    current_cartesian_mode = cartesian_mode;
-    current_speed_override = speed_override * 100.0f; // Convert to percentage
-    
-    // Update UI elements (without triggering callbacks)
-    ui_update_state_values(values, count);
-    
-    // Temporarily remove event callbacks to prevent feedback loop
-    if (dd_work) lv_obj_remove_event_cb(dd_work, dropdown_event_cb);
-    if (dd_tool) lv_obj_remove_event_cb(dd_tool, dropdown_event_cb);
-    if (dd_state) lv_obj_remove_event_cb(dd_state, dropdown_event_cb);
-    if (mode_toggle_btn) lv_obj_remove_event_cb(mode_toggle_btn, toggle_button_event_cb);
-    if (speed_btnmatrix) lv_obj_remove_event_cb(speed_btnmatrix, speed_btnmatrix_event_cb);
-    
-    // Update UI values
-    ui_set_work_offset(work_offset_id);
-    ui_set_tool_orientation(tool_id);
-    ui_set_robot_state(state);
-    ui_set_control_mode(cartesian_mode);
-    ui_set_speed(current_speed_override);
-    
-    // Re-attach event callbacks
-    if (dd_work) lv_obj_add_event_cb(dd_work, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    if (dd_tool) lv_obj_add_event_cb(dd_tool, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    if (dd_state) lv_obj_add_event_cb(dd_state, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    if (mode_toggle_btn) lv_obj_add_event_cb(mode_toggle_btn, toggle_button_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    if (speed_btnmatrix) lv_obj_add_event_cb(speed_btnmatrix, speed_btnmatrix_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    
-    ESP_LOGD(TAG, "Telemetry updated: state=%d, tool=%d, work=%d, mode=%d, speed=%.1f%%",
-             state, tool_id, work_offset_id, cartesian_mode, current_speed_override);
-}
-
-void ui_add_debug_log(const char *message)
-{
-    if (message) {
-        ui_set_terminal_text(message);
-        ui_set_terminal_text("\n");
-        ESP_LOGI(TAG, "Debug: %s", message);
-    }
-}
-
-// ========== UI Creation Functions ==========
-
 void ui_create_robot_control(void)
 {
     lv_obj_t *scr = lv_scr_act();
     lv_obj_clean(scr);
     
-    // Set background color
-    lv_style_init(&style_screen);
-    lv_style_set_bg_color(&style_screen, lv_color_hex(0x1a1a2e));
-    lv_obj_add_style(scr, &style_screen, 0);
-    
-    // Column and row definitions for main grid
+    // Column and row definitions
     static lv_coord_t col_dsc[] = {80, 75, LV_GRID_TEMPLATE_LAST};
     static lv_coord_t row_dsc[] = {20, 20, 20, 20, 20, 20, 20, LV_GRID_TEMPLATE_LAST};
     
-    // Grid container for state values
+    // Grid container
     lv_obj_t * cont = lv_obj_create(scr);
     lv_obj_set_grid_dsc_array(cont, col_dsc, row_dsc);
     lv_obj_set_size(cont, 250, 180);
@@ -348,197 +172,110 @@ void ui_create_robot_control(void)
     lv_obj_set_style_pad_all(cont, 7, 0);
     lv_obj_set_style_pad_row(cont, 4, 0);
     lv_obj_set_style_pad_column(cont, 45, 0);
-    lv_obj_set_style_bg_color(cont, lv_color_hex(0x16213e), 0);
-    lv_obj_set_style_border_width(cont, 1, 0);
-    lv_obj_set_style_border_color(cont, lv_color_hex(0x0f3460), 0);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     
     // State labels with names
     const char * names[] = {
-        "X", "Y", "Z", "R", "P", "Yaw", 
+        "X", "Y", "Z", "R", "P", "Y", 
         "J1", "J2", "J3", "J4", "J5", "J6", "Grip"
     };
     
     for(int i = 0; i < 13; i++) {
-        // Create container for each value with label
-        lv_obj_t * val_cont = lv_obj_create(cont);
-        lv_obj_set_size(val_cont, 70, 25);
-        lv_obj_set_style_bg_opa(val_cont, LV_OPA_TRANSP, 0);
-        lv_obj_set_style_border_width(val_cont, 0, 0);
+        state_labels[i] = lv_label_create(cont);
+        lv_obj_set_style_text_font(state_labels[i], &lv_font_montserrat_16, 0);
         
         int col = (i < 6) ? 0 : 1;
         int row = (i < 6) ? i : (i - 6);
         
-        lv_obj_set_grid_cell(val_cont, 
+        lv_obj_set_grid_cell(state_labels[i], 
                             LV_GRID_ALIGN_START, col, 1, 
                             LV_GRID_ALIGN_CENTER, row, 1);
         
-        // Name label
-        lv_obj_t * name_label = lv_label_create(val_cont);
-        lv_label_set_text(name_label, names[i]);
-        lv_obj_set_style_text_font(name_label, &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(name_label, lv_color_hex(0x85a8b3), 0);
-        lv_obj_align(name_label, LV_ALIGN_TOP_LEFT, 0, 0);
-        
-        // Value label
-        state_labels[i] = lv_label_create(val_cont);
-        lv_label_set_text(state_labels[i], "0.00");
-        lv_obj_set_style_text_font(state_labels[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(state_labels[i], lv_color_hex(0xe94560), 0);
-        lv_obj_align(state_labels[i], LV_ALIGN_TOP_RIGHT, -5, 0);
-        
+        lv_label_set_text(state_labels[i], names[i]);
         last_vals[i] = -9999.0f;
     }
     
-    // Create control panel background
-    lv_obj_t * control_panel = lv_obj_create(scr);
-    lv_obj_set_size(control_panel, 280, 270);
-    lv_obj_align(control_panel, LV_ALIGN_TOP_RIGHT, -10, 5);
-    lv_obj_set_style_bg_color(control_panel, lv_color_hex(0x16213e), 0);
-    lv_obj_set_style_border_width(control_panel, 1, 0);
-    lv_obj_set_style_border_color(control_panel, lv_color_hex(0x0f3460), 0);
-    lv_obj_set_style_pad_all(control_panel, 10, 0);
-    
     // 1. WORK OFFSETS
-    lv_obj_t * lbl_work = lv_label_create(control_panel);
-    lv_label_set_text(lbl_work, "Work Offset:");
-    lv_obj_set_style_text_font(lbl_work, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_work, lv_color_hex(0x85a8b3), 0);
-    lv_obj_align(lbl_work, LV_ALIGN_TOP_LEFT, 0, 0);
-    
-    dd_work = lv_dropdown_create(control_panel);
+    dd_work = lv_dropdown_create(scr);
     lv_dropdown_set_options(dd_work, "BASE\nUSER1\nUSER2\nUSER3\nUSER4\nUSER5");
-    lv_obj_set_width(dd_work, 150);
-    lv_obj_set_style_text_font(dd_work, &lv_font_montserrat_12, 0);
-    lv_obj_align_to(dd_work, lbl_work, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+    lv_obj_set_width(dd_work, 110);
+    lv_obj_set_style_text_font(dd_work, &lv_font_montserrat_14, 0);
+    lv_obj_align(dd_work, LV_ALIGN_TOP_RIGHT, -10, 25);
     lv_obj_add_event_cb(dd_work, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     
-    // 2. TOOL ORIENTATION
-    lv_obj_t * lbl_tool = lv_label_create(control_panel);
-    lv_label_set_text(lbl_tool, "Tool Offset:");
-    lv_obj_set_style_text_font(lbl_tool, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_tool, lv_color_hex(0x85a8b3), 0);
-    lv_obj_align_to(lbl_tool, lbl_work, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 15);
+    lv_obj_t * lbl_work = lv_label_create(scr);
+    lv_label_set_text(lbl_work, "Work Offset:");
+    lv_obj_set_style_text_font(lbl_work, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_work, dd_work, LV_ALIGN_OUT_TOP_MID, 0, -5);
     
-    dd_tool = lv_dropdown_create(control_panel);
-    lv_dropdown_set_options(dd_tool, "FLANGE\nTOOL1\nTOOL2\nTOOL3\nTOOL4\nTOOL5");
-    lv_obj_set_width(dd_tool, 150);
-    lv_obj_set_style_text_font(dd_tool, &lv_font_montserrat_12, 0);
-    lv_obj_align_to(dd_tool, lbl_tool, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+    // 2. TOOL ORIENTATION
+    dd_tool = lv_dropdown_create(scr);
+    lv_dropdown_set_options(dd_tool, "FLANGE\nTOOL1\nTOOL2\nTOOL3\nTOOL4\nTOOL5\n");
+    lv_obj_set_width(dd_tool, 110);
+    lv_obj_set_style_text_font(dd_tool, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(dd_tool, dd_work, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
     lv_obj_add_event_cb(dd_tool, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     
-    // 3. ROBOT STATE
-    lv_obj_t * lbl_state = lv_label_create(control_panel);
-    lv_label_set_text(lbl_state, "Robot State:");
-    lv_obj_set_style_text_font(lbl_state, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_state, lv_color_hex(0x85a8b3), 0);
-    lv_obj_align_to(lbl_state, lbl_tool, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 15);
+    lv_obj_t * lbl_tool = lv_label_create(scr);
+    lv_label_set_text(lbl_tool, "Tool Orientation:");
+    lv_obj_set_style_text_font(lbl_tool, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_tool, dd_tool, LV_ALIGN_OUT_TOP_MID, 0, -5);
     
-    dd_state = lv_dropdown_create(control_panel);
+    // 3. ROBOT STATE
+    dd_state = lv_dropdown_create(scr);
     lv_dropdown_set_options(dd_state, "ESTOP\nIDLE\nTEACH\nJOG\nAUTO");
     lv_dropdown_set_selected(dd_state, 3);
-    lv_obj_set_width(dd_state, 150);
-    lv_obj_set_style_text_font(dd_state, &lv_font_montserrat_12, 0);
-    lv_obj_align_to(dd_state, lbl_state, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+    lv_obj_set_width(dd_state, 110);
+    lv_obj_set_style_text_font(dd_state, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(dd_state, dd_tool, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
     lv_obj_add_event_cb(dd_state, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     
-    // 4. MODE TOGGLE BUTTON
-    lv_obj_t * lbl_mode = lv_label_create(control_panel);
-    lv_label_set_text(lbl_mode, "Control Mode:");
-    lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(lbl_mode, lv_color_hex(0x85a8b3), 0);
-    lv_obj_align_to(lbl_mode, lbl_state, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 15);
+    lv_obj_t * lbl_state = lv_label_create(scr);
+    lv_label_set_text(lbl_state, "Robot State:");
+    lv_obj_set_style_text_font(lbl_state, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_state, dd_state, LV_ALIGN_OUT_TOP_MID, 0, -5);
     
-    mode_toggle_btn = lv_btn_create(control_panel);
-    lv_obj_set_size(mode_toggle_btn, 80, 30);
-    lv_obj_align_to(mode_toggle_btn, lbl_mode, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
+    // 4. MODE TOGGLE BUTTON
+    mode_toggle_btn = lv_btn_create(scr);
+    lv_obj_set_size(mode_toggle_btn, 110, 30);
+    lv_obj_align_to(mode_toggle_btn, dd_state, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
     lv_obj_add_flag(mode_toggle_btn, LV_OBJ_FLAG_CHECKABLE);
     lv_obj_add_event_cb(mode_toggle_btn, toggle_button_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
     
     lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
     lv_obj_set_style_radius(mode_toggle_btn, 8, 0);
-    lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_GREEN), LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_CHECKED);
     
     lv_obj_t * btn_label = lv_label_create(mode_toggle_btn);
     lv_label_set_text(btn_label, "JOINT");
-    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_12, 0);
-    lv_obj_center(btn_label);
-    
-    // 5. ESTOP Button
-    estop_btn = lv_btn_create(control_panel);
-    lv_obj_set_size(estop_btn, 100, 40);
-    lv_obj_align_to(estop_btn, mode_toggle_btn, LV_ALIGN_OUT_BOTTOM_LEFT, -10, 20);
-    lv_obj_set_style_bg_color(estop_btn, lv_palette_main(LV_PALETTE_GREEN), 0);
-    lv_obj_add_event_cb(estop_btn, estop_button_event_cb, LV_EVENT_CLICKED, NULL);
-    
-    btn_label = lv_label_create(estop_btn);
-    lv_label_set_text(btn_label, "ESTOP");
     lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_14, 0);
     lv_obj_center(btn_label);
     
-    // Action buttons container
-    lv_obj_t * action_container = lv_obj_create(control_panel);
-    lv_obj_set_size(action_container, 250, 40);
-    lv_obj_align_to(action_container, estop_btn, LV_ALIGN_OUT_RIGHT_MID, 15, 0);
-    lv_obj_set_style_bg_opa(action_container, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(action_container, 0, 0);
-    lv_obj_clear_flag(action_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t * lbl_mode = lv_label_create(scr);
+    lv_label_set_text(lbl_mode, "Control Mode:");
+    lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_mode, mode_toggle_btn, LV_ALIGN_OUT_TOP_MID, 0, -5);
     
-    // Home button
-    home_btn = lv_btn_create(action_container);
-    lv_obj_set_size(home_btn, 60, 35);
-    lv_obj_align(home_btn, LV_ALIGN_TOP_LEFT, 0, 0);
-    lv_obj_set_style_bg_color(home_btn, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_add_event_cb(home_btn, action_button_event_cb, LV_EVENT_CLICKED, NULL);
-    
-    btn_label = lv_label_create(home_btn);
-    lv_label_set_text(btn_label, "HOME");
-    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_12, 0);
-    lv_obj_center(btn_label);
-    
-    // Reset button
-    reset_btn = lv_btn_create(action_container);
-    lv_obj_set_size(reset_btn, 60, 35);
-    lv_obj_align_to(reset_btn, home_btn, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
-    lv_obj_set_style_bg_color(reset_btn, lv_palette_main(LV_PALETTE_RED), 0);
-    lv_obj_add_event_cb(reset_btn, action_button_event_cb, LV_EVENT_CLICKED, NULL);
-    
-    btn_label = lv_label_create(reset_btn);
-    lv_label_set_text(btn_label, "RESET");
-    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_12, 0);
-    lv_obj_center(btn_label);
-    
-    // Save button
-    save_btn = lv_btn_create(action_container);
-    lv_obj_set_size(save_btn, 60, 35);
-    lv_obj_align_to(save_btn, reset_btn, LV_ALIGN_OUT_RIGHT_MID, 10, 0);
-    lv_obj_set_style_bg_color(save_btn, lv_palette_main(LV_PALETTE_BLUE), 0);
-    lv_obj_add_event_cb(save_btn, action_button_event_cb, LV_EVENT_CLICKED, NULL);
-    
-    btn_label = lv_label_create(save_btn);
-    lv_label_set_text(btn_label, "SAVE");
-    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_12, 0);
-    lv_obj_center(btn_label);
-    
-    // 6. SPEED BUTTON MATRIX (moved below action buttons)
-    lv_obj_t * speed_container = lv_obj_create(control_panel);
-    lv_obj_set_size(speed_container, 260, 50);
-    lv_obj_align_to(speed_container, action_container, LV_ALIGN_OUT_BOTTOM_LEFT, 0, 15);
+    // 5. SPEED BUTTON MATRIX
+    lv_obj_t * speed_container = lv_obj_create(scr);
+    lv_obj_set_size(speed_container, 280, 70);
     lv_obj_set_style_bg_opa(speed_container, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(speed_container, 0, 0);
+    lv_obj_set_style_pad_all(speed_container, 0, 0);
     lv_obj_clear_flag(speed_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(speed_container, LV_ALIGN_BOTTOM_LEFT, 5, -70);
     
     lv_obj_t * speed_title = lv_label_create(speed_container);
-    lv_label_set_text(speed_title, "Speed:");
-    lv_obj_set_style_text_font(speed_title, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(speed_title, lv_color_hex(0x85a8b3), 0);
-    lv_obj_align(speed_title, LV_ALIGN_TOP_LEFT, 5, 0);
+    lv_label_set_text(speed_title, "Speed Override:");
+    lv_obj_set_style_text_font(speed_title, &lv_font_montserrat_14, 0);
+    lv_obj_align(speed_title, LV_ALIGN_TOP_LEFT, 5, 10);
+    lv_obj_set_style_text_color(speed_title, lv_color_white(), 0);
     
     static const char * speed_map[] = {"0%", "25%", "50%", "75%", "100%", ""};
     speed_btnmatrix = lv_btnmatrix_create(speed_container);
     lv_btnmatrix_set_map(speed_btnmatrix, speed_map);
-    lv_obj_set_size(speed_btnmatrix, 250, 30);
+    lv_obj_set_size(speed_btnmatrix, 270, 40);
     lv_obj_align(speed_btnmatrix, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_clear_flag(speed_btnmatrix, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_event_cb(speed_btnmatrix, speed_btnmatrix_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -553,28 +290,18 @@ void ui_create_robot_control(void)
     lv_btnmatrix_set_btn_ctrl(speed_btnmatrix, 2, LV_BTNMATRIX_CTRL_CHECKED);
     lv_obj_set_style_bg_color(speed_btnmatrix, lv_palette_main(LV_PALETTE_BLUE), LV_PART_ITEMS | LV_STATE_CHECKED);
     
-    // 7. TERMINAL
+    // 6. TERMINAL
     terminal = lv_textarea_create(scr);
-    lv_obj_set_size(terminal, 580, 80);
-    lv_obj_align(terminal, LV_ALIGN_BOTTOM_LEFT, 5, -5);
+    lv_obj_set_size(terminal, 460, 60);
+    lv_obj_align(terminal, LV_ALIGN_BOTTOM_LEFT, 10, -5);
     lv_textarea_set_text(terminal, "ROS2 terminal ready...\n");
     lv_obj_set_style_text_font(terminal, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(terminal, lv_color_hex(0x85a8b3), 0);
-    lv_obj_set_style_bg_color(terminal, lv_color_hex(0x0f3460), 0);
-    lv_obj_set_style_border_width(terminal, 0, 0);
-    lv_textarea_set_one_line(terminal, false);
-    lv_obj_set_style_radius(terminal, 5, 0);
+    lv_obj_set_style_text_color(terminal, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(terminal, lv_color_black(), 0);
     
     ESP_LOGI(TAG, "Robot control UI created");
 }
 
-void ui_clear_screen(void)
-{
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_clean(scr);
-}
-
-// ========== LVGL Display Functions ==========
 
 static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
 {
@@ -587,8 +314,6 @@ static void IRAM_ATTR lvgl_tick_cb(void *param)
 {
     lv_tick_inc(LVGL_TICK_MS);
 }
-
-// ========== Initialization ==========
 
 esp_err_t ui_init(void)
 {
@@ -603,11 +328,6 @@ esp_err_t ui_init(void)
     ESP_LOGI(TAG, "Allocating second LVGL buffer");
     buf2 = (lv_color_t *)heap_caps_malloc(LV_BUFFER_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
 #endif
-    
-    if (!buf1) {
-        ESP_LOGE(TAG, "Failed to allocate LVGL buffer");
-        return ESP_ERR_NO_MEM;
-    }
     
     lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LV_BUFFER_SIZE);
     
@@ -630,6 +350,7 @@ esp_err_t ui_init(void)
         indev_drv.type = LV_INDEV_TYPE_POINTER;
         indev_drv.disp = disp;
         indev_drv.read_cb = touch_driver_read;
+        // Note: touch_driver_read will get the tp handle from its own static variable
         lv_indev_drv_register(&indev_drv);
         ESP_LOGI(TAG, "Touch registered with LVGL");
     } else {
@@ -645,7 +366,7 @@ esp_err_t ui_init(void)
     ESP_ERROR_CHECK(esp_timer_create(&timer_args, &tick_timer));
     ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, LVGL_TICK_MS * 1000));
     
-    ESP_LOGI(TAG, "UI initialized successfully");
+    ESP_LOGI(TAG, "UI initialized");
     return ESP_OK;
 }
 
@@ -653,4 +374,81 @@ void ui_task_handler(void)
 {
     lv_timer_handler();
     vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+void ui_clear_screen(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+}
+
+
+// ========== ROS интеграция (минимально) ==========
+
+void ui_set_command_callback(ui_command_callback_t cb)
+{
+    command_callback = cb;
+}
+
+// Получение состояния
+uint8_t ui_get_work_offset(void) {
+    return dd_work ? lv_dropdown_get_selected(dd_work) : 0;
+}
+
+uint8_t ui_get_tool_id(void) {
+    return dd_tool ? lv_dropdown_get_selected(dd_tool) : 0;
+}
+
+uint8_t ui_get_robot_state(void) {
+    return dd_state ? lv_dropdown_get_selected(dd_state) : 0;
+}
+
+bool ui_get_cartesian_mode(void) {
+    return mode_toggle_btn ? lv_obj_has_state(mode_toggle_btn, LV_STATE_CHECKED) : false;
+}
+
+float ui_get_speed_override(void) {
+    // Найти выбранную кнопку скорости
+    if (speed_btnmatrix) {
+        for (int i = 0; i < 5; i++) {
+            if (lv_btnmatrix_has_btn_ctrl(speed_btnmatrix, i, LV_BTNMATRIX_CTRL_CHECKED)) {
+                return i * 0.25f; // 0, 0.25, 0.5, 0.75, 1.0
+            }
+        }
+    }
+    return 0.5f;
+}
+
+// Обновление из ROS
+void ui_update_telemetry(float *values, int count, uint8_t state, 
+                        uint8_t tool_id, uint8_t work_offset, 
+                        bool cartesian, float speed)
+{
+    ui_update_state_values(values, count);
+    
+    if (dd_state) lv_dropdown_set_selected(dd_state, state);
+    if (dd_tool) lv_dropdown_set_selected(dd_tool, tool_id);
+    if (dd_work) lv_dropdown_set_selected(dd_work, work_offset);
+    
+    if (mode_toggle_btn) {
+        if (cartesian) {
+            lv_obj_add_state(mode_toggle_btn, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(mode_toggle_btn, LV_STATE_CHECKED);
+        }
+    }
+    
+    if (speed_btnmatrix) {
+        int btn = (int)(speed * 4);
+        if (btn < 0) btn = 0;
+        if (btn > 4) btn = 4;
+        lv_btnmatrix_set_btn_ctrl(speed_btnmatrix, btn, LV_BTNMATRIX_CTRL_CHECKED);
+    }
+}
+
+
+void ui_add_debug_log(const char *message)
+{
+    ui_set_terminal_text(message);
+    ui_set_terminal_text("\n");
 }
