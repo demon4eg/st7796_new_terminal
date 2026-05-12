@@ -41,5 +41,6 @@ void ui_set_tool_orientation(int index);
 void ui_set_robot_state(int index);
 void ui_set_control_mode(bool is_cartesian);
 void ui_set_speed(float percent);
+void ui_update_container_color(uint8_t state);
 
 #endif

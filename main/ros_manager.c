@@ -94,6 +94,8 @@ static void telemetry_callback(const void * msgin)
         msg->cartesian_mode,
         msg->speed_override
     );
+    
+    ui_update_container_color(msg->state);
 }
 
 static void ros_ui_request_handler(int type, int id, float value)

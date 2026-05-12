@@ -20,8 +20,6 @@ static lv_disp_draw_buf_t draw_buf;
 static lv_disp_drv_t disp_drv;
 static lv_color_t *buf1 = NULL;
 static lv_color_t *buf2 = NULL;
-static lv_obj_t *meter = NULL;
-static lv_style_t style_screen;
 
 static lv_obj_t * dd_work = NULL;
 static lv_obj_t * dd_tool = NULL;
@@ -31,17 +29,12 @@ static lv_obj_t * state_labels[13] = {NULL};
 static lv_obj_t * mode_toggle_btn = NULL;
 static lv_obj_t * speed_btnmatrix = NULL;
 static float last_vals[13] = {0};
+static lv_obj_t * coord_container = NULL;  // Coord container color
 
 // Forward declarations for event callbacks
 static void dropdown_event_cb(lv_event_t * e);
 static void toggle_button_event_cb(lv_event_t * e);
 static void speed_btnmatrix_event_cb(lv_event_t * e);
-
-static uint8_t current_tool_id = 0;
-static uint8_t current_work_offset = 0;
-static uint8_t current_robot_state = 3;
-static bool current_cartesian_mode = false;
-static float current_speed_override = 50.0f;
 static ui_command_callback_t command_callback = NULL;
 
 
@@ -161,40 +154,52 @@ void ui_create_robot_control(void)
     lv_obj_clean(scr);
     
     // Column and row definitions
-    static lv_coord_t col_dsc[] = {80, 75, LV_GRID_TEMPLATE_LAST};
+    static lv_coord_t col_dsc[] = {110, 110, LV_GRID_TEMPLATE_LAST};
     static lv_coord_t row_dsc[] = {20, 20, 20, 20, 20, 20, 20, LV_GRID_TEMPLATE_LAST};
     
     // Grid container
     lv_obj_t * cont = lv_obj_create(scr);
+    coord_container = cont; // Container color
     lv_obj_set_grid_dsc_array(cont, col_dsc, row_dsc);
-    lv_obj_set_size(cont, 250, 180);
+    lv_obj_set_size(cont, 260, 180);
     lv_obj_align(cont, LV_ALIGN_TOP_LEFT, 5, 5);
     lv_obj_set_style_pad_all(cont, 7, 0);
     lv_obj_set_style_pad_row(cont, 4, 0);
-    lv_obj_set_style_pad_column(cont, 45, 0);
+    lv_obj_set_style_pad_column(cont, 20, 0);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
     
     // State labels with names
     const char * names[] = {
-        "X", "Y", "Z", "R", "P", "Y", 
-        "J1", "J2", "J3", "J4", "J5", "J6", "Grip"
+        "X(mm): ", "Y(mm): ", "Z(mm): ", "R(°): ", "P(°): ", "Y(°): ", 
+        "J1(°): ", "J2(°): ", "J3(°): ", "J4(°): ", "J5(°): ", "J6(°): ", "T(units): "
     };
-    
+
     for(int i = 0; i < 13; i++) {
-        state_labels[i] = lv_label_create(cont);
-        lv_obj_set_style_text_font(state_labels[i], &lv_font_montserrat_16, 0);
-        
         int col = (i < 6) ? 0 : 1;
         int row = (i < 6) ? i : (i - 6);
         
-        lv_obj_set_grid_cell(state_labels[i], 
+        // Создаем лейбл с именем
+        lv_obj_t * name_label = lv_label_create(cont);
+        lv_label_set_text(name_label, names[i]);
+        lv_obj_set_style_text_font(name_label, &lv_font_montserrat_14, 0);
+        lv_obj_set_grid_cell(name_label, 
                             LV_GRID_ALIGN_START, col, 1, 
                             LV_GRID_ALIGN_CENTER, row, 1);
+        lv_obj_set_style_text_color(name_label, lv_color_black(), 0);
         
-        lv_label_set_text(state_labels[i], names[i]);
+        // Создаем лейбл со значением (сдвигаем его правее)
+        state_labels[i] = lv_label_create(cont);
+        lv_obj_set_style_text_font(state_labels[i], &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(name_label, lv_color_black(), 0);
+        lv_obj_set_grid_cell(state_labels[i], 
+                            LV_GRID_ALIGN_END, col, 1,  // ALIGN_END для правой стороны
+                            LV_GRID_ALIGN_CENTER, row, 1);
+        lv_label_set_text(state_labels[i], "0.00");
         last_vals[i] = -9999.0f;
     }
     
+    
+
     // 1. WORK OFFSETS
     dd_work = lv_dropdown_create(scr);
     lv_dropdown_set_options(dd_work, "BASE\nUSER1\nUSER2\nUSER3\nUSER4\nUSER5");
@@ -302,7 +307,6 @@ void ui_create_robot_control(void)
     ESP_LOGI(TAG, "Robot control UI created");
 }
 
-
 static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
 {
     esp_lcd_panel_handle_t panel = display_get_panel_handle();
@@ -384,6 +388,39 @@ void ui_clear_screen(void)
 
 
 // ========== ROS интеграция (минимально) ==========
+
+// Update container color based on robot state
+void ui_update_container_color(uint8_t state)
+{
+    ESP_LOGI(TAG, "Updating container color to state: %d", state);
+    
+    if (coord_container == NULL) {
+        ESP_LOGW(TAG, "coord_container is NULL!");
+        return;
+    }
+    
+    switch(state) {
+        case 0: // ESTOP
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0xFF0000), 0);
+            break;
+        case 1: // IDLE
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0xFFFF00), 0);
+            break;
+        case 2: // TEACH
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0xFFA500), 0);
+            break;
+        case 3: // JOG
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0x0000FF), 0);
+            break;
+        case 4: // AUTO
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0x00FF00), 0);
+            break;
+        default:
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0x1a1a2e), 0);
+            break;
+    }
+}
+
 
 void ui_set_command_callback(ui_command_callback_t cb)
 {
