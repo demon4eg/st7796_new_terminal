@@ -122,10 +122,10 @@ void ros_send_full_state(void)
     cmd_msg.tool_id = ui_get_tool_id();
     cmd_msg.work_offset_id = ui_get_work_offset();  // убрали _id
     cmd_msg.state = ui_get_robot_state();
-    cmd_msg.auto_state = 0;  //暂时 не используем
+    cmd_msg.auto_state = 0;  // не используем
     cmd_msg.cartesian_mode = ui_get_cartesian_mode();
     cmd_msg.speed_override = ui_get_speed_override();
-    cmd_msg.estop = false;  //暂时 не используем
+    cmd_msg.estop = false;  // не используем
     cmd_msg.action_trigger = 0;
 
     RCSOFTCHECK(rcl_publish(&cmd_pub, &cmd_msg, NULL));

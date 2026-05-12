@@ -27,7 +27,7 @@ static lv_obj_t * dd_state = NULL;
 static lv_obj_t * terminal = NULL;
 static lv_obj_t * state_labels[13] = {NULL};
 static lv_obj_t * mode_toggle_btn = NULL;
-static lv_obj_t * speed_btnmatrix = NULL;
+static lv_obj_t * dd_speed = NULL;
 static float last_vals[13] = {0};
 static lv_obj_t * coord_container = NULL;  // Coord container color
 
@@ -77,15 +77,15 @@ static void toggle_button_event_cb(lv_event_t * e) {
 }
 
 // Speed button matrix event handler
-static void speed_btnmatrix_event_cb(lv_event_t * e)
+static void speed_dropdown_event_cb(lv_event_t * e)
 {
-    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    lv_obj_t * dropdown = lv_event_get_target(e);
+    int index = lv_dropdown_get_selected(dropdown);
     
-    lv_obj_t * btnm = lv_event_get_target(e);
-    uint32_t id = lv_btnmatrix_get_selected_btn(btnm);
+    float speed_percent = index * 25.0f;
+    ESP_LOGI(TAG, "Speed changed to %.0f%%", speed_percent);
     
-    if (id <= 4 && command_callback) {
-        float speed_percent = id * 25.0f;
+    if (command_callback) {
         command_callback(6, 0, speed_percent / 100.0f);
     }
 }
@@ -147,11 +147,11 @@ void ui_set_control_mode(bool is_cartesian)
 
 void ui_set_speed(float percent)
 {
-    if (speed_btnmatrix) {
+    if (dd_speed) {
         int btn_id = (int)(percent / 25.0f);
         if (btn_id < 0) btn_id = 0;
         if (btn_id > 4) btn_id = 4;
-        lv_btnmatrix_set_btn_ctrl(speed_btnmatrix, btn_id, LV_BTNMATRIX_CTRL_CHECKED);
+        lv_dropdown_set_selected(dd_speed, btn_id);
     }
 }
 
@@ -177,7 +177,7 @@ void ui_create_robot_control(void)
     
     // State labels with names
     const char * names[] = {
-        "X(mm): ", "Y(mm): ", "Z(mm): ", "R(°): ", "P(°): ", "Y(°): ", 
+        "X(m): ", "Y(m): ", "Z(m): ", "R(rad): ", "P(rad): ", "Y(rad): ", 
         "J1(°): ", "J2(°): ", "J3(°): ", "J4(°): ", "J5(°): ", "J6(°): ", "T(units): "
     };
 
@@ -217,13 +217,13 @@ void ui_create_robot_control(void)
 
     work_value_label = lv_label_create(scr);
     lv_label_set_text(work_value_label, "[0]");
-    lv_obj_set_style_text_font(work_value_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(work_value_label, &lv_font_montserrat_10, 0);
     lv_obj_align_to(work_value_label, dd_work, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_t * lbl_work = lv_label_create(scr);
-    lv_label_set_text(lbl_work, "Work Offset:");
+    lv_label_set_text(lbl_work, "Work Offset:  (fb)");
     lv_obj_set_style_text_font(lbl_work, &lv_font_montserrat_14, 0);
-    lv_obj_align_to(lbl_work, dd_work, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    lv_obj_align_to(lbl_work, dd_work, LV_ALIGN_OUT_TOP_RIGHT, 25, -5);
     
     // 2. TOOL ORIENTATION
     dd_tool = lv_dropdown_create(scr);
@@ -235,13 +235,13 @@ void ui_create_robot_control(void)
 
     tool_value_label = lv_label_create(scr);
     lv_label_set_text(tool_value_label, "[0]");
-    lv_obj_set_style_text_font(tool_value_label, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(tool_value_label, &lv_font_montserrat_10, 0);
     lv_obj_align_to(tool_value_label, dd_tool, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_t * lbl_tool = lv_label_create(scr);
     lv_label_set_text(lbl_tool, "Tool Orientation:");
     lv_obj_set_style_text_font(lbl_tool, &lv_font_montserrat_14, 0);
-    lv_obj_align_to(lbl_tool, dd_tool, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    lv_obj_align_to(lbl_tool, dd_tool, LV_ALIGN_OUT_TOP_RIGHT, 23, -5);
     
     // 3. ROBOT STATE
     dd_state = lv_dropdown_create(scr);
@@ -253,14 +253,14 @@ void ui_create_robot_control(void)
     lv_obj_add_event_cb(dd_state, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     state_value_label = lv_label_create(scr);
-    lv_label_set_text(state_value_label, "[JOG]");
-    lv_obj_set_style_text_font(state_value_label, &lv_font_montserrat_12, 0);
+    lv_label_set_text(state_value_label, "[J]");
+    lv_obj_set_style_text_font(state_value_label, &lv_font_montserrat_10, 0);
     lv_obj_align_to(state_value_label, dd_state, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_t * lbl_state = lv_label_create(scr);
     lv_label_set_text(lbl_state, "Robot State:");
     lv_obj_set_style_text_font(lbl_state, &lv_font_montserrat_14, 0);
-    lv_obj_align_to(lbl_state, dd_state, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    lv_obj_align_to(lbl_state, dd_state, LV_ALIGN_OUT_TOP_RIGHT, -10, -5);
     
     // 4. MODE TOGGLE BUTTON
     mode_toggle_btn = lv_btn_create(scr);
@@ -270,14 +270,14 @@ void ui_create_robot_control(void)
     lv_obj_add_event_cb(mode_toggle_btn, toggle_button_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
     mode_value_label = lv_label_create(scr);
-    lv_label_set_text(mode_value_label, "[JOINT]");
-    lv_obj_set_style_text_font(mode_value_label, &lv_font_montserrat_12, 0);
+    lv_label_set_text(mode_value_label, "[J]");
+    lv_obj_set_style_text_font(mode_value_label, &lv_font_montserrat_10, 0);
     lv_obj_align_to(mode_value_label, mode_toggle_btn, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
     lv_obj_set_style_border_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
     lv_obj_set_style_radius(mode_toggle_btn, 8, 0);
-    lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_CHECKED);
+    lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_GREEN), LV_STATE_CHECKED);
     
     lv_obj_t * btn_label = lv_label_create(mode_toggle_btn);
     lv_label_set_text(btn_label, "JOINT");
@@ -287,50 +287,32 @@ void ui_create_robot_control(void)
     lv_obj_t * lbl_mode = lv_label_create(scr);
     lv_label_set_text(lbl_mode, "Control Mode:");
     lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_14, 0);
-    lv_obj_align_to(lbl_mode, mode_toggle_btn, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    lv_obj_align_to(lbl_mode, mode_toggle_btn, LV_ALIGN_OUT_TOP_RIGHT, 3, -5);
     
-    // 5. SPEED BUTTON MATRIX
-    lv_obj_t * speed_container = lv_obj_create(scr);
-    lv_obj_set_size(speed_container, 280, 70);
-    lv_obj_set_style_bg_opa(speed_container, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(speed_container, 0, 0);
-    lv_obj_set_style_pad_all(speed_container, 0, 0);
-    lv_obj_clear_flag(speed_container, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_align(speed_container, LV_ALIGN_BOTTOM_LEFT, 5, -70);
+    // 5. SPEED DROPDOWN (under Control Mode)
+    dd_speed = lv_dropdown_create(scr);
+    lv_dropdown_set_options(dd_speed, "0%\n25%\n50%\n75%\n100%");
+    lv_dropdown_set_selected(dd_speed, 2);  // 50% default
+    lv_obj_set_width(dd_speed, 80);
+    lv_obj_set_style_text_font(dd_speed, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(dd_speed, mode_toggle_btn, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
+    lv_obj_add_event_cb(dd_speed, speed_dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
-    speed_value_label = lv_label_create(speed_container);
-    lv_label_set_text(speed_value_label, "50%");
-    lv_obj_set_style_text_font(speed_value_label, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(speed_value_label, lv_color_hex(0x00FF00), 0);
-    lv_obj_align(speed_value_label, LV_ALIGN_TOP_RIGHT, -5, 10);
-    
-    lv_obj_t * speed_title = lv_label_create(speed_container);
-    lv_label_set_text(speed_title, "Speed Override:");
-    lv_obj_set_style_text_font(speed_title, &lv_font_montserrat_14, 0);
-    lv_obj_align(speed_title, LV_ALIGN_TOP_LEFT, 5, 10);
-    lv_obj_set_style_text_color(speed_title, lv_color_white(), 0);
-    
-    static const char * speed_map[] = {"0%", "25%", "50%", "75%", "100%", ""};
-    speed_btnmatrix = lv_btnmatrix_create(speed_container);
-    lv_btnmatrix_set_map(speed_btnmatrix, speed_map);
-    lv_obj_set_size(speed_btnmatrix, 270, 40);
-    lv_obj_align(speed_btnmatrix, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_clear_flag(speed_btnmatrix, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(speed_btnmatrix, speed_btnmatrix_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    
-    lv_obj_set_style_pad_all(speed_btnmatrix, 2, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(speed_btnmatrix, lv_palette_main(LV_PALETTE_GREEN), LV_PART_ITEMS);
-    lv_obj_set_style_text_color(speed_btnmatrix, lv_color_white(), LV_PART_ITEMS);
-    lv_obj_set_style_radius(speed_btnmatrix, 4, LV_PART_ITEMS);
-    
-    lv_btnmatrix_set_btn_ctrl_all(speed_btnmatrix, LV_BTNMATRIX_CTRL_CHECKABLE);
-    lv_btnmatrix_set_one_checked(speed_btnmatrix, true);
-    lv_btnmatrix_set_btn_ctrl(speed_btnmatrix, 2, LV_BTNMATRIX_CTRL_CHECKED);
-    lv_obj_set_style_bg_color(speed_btnmatrix, lv_palette_main(LV_PALETTE_BLUE), LV_PART_ITEMS | LV_STATE_CHECKED);
+    // Label for dropdown
+    lv_obj_t * lbl_speed = lv_label_create(scr);
+    lv_label_set_text(lbl_speed, "Speed Override:");
+    lv_obj_set_style_text_font(lbl_speed, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_speed, dd_speed, LV_ALIGN_OUT_TOP_RIGHT, 30, -5);
+
+    // Value display next to dropdown
+    speed_value_label = lv_label_create(scr);
+    lv_label_set_text(speed_value_label, "[50]");
+    lv_obj_set_style_text_font(speed_value_label, &lv_font_montserrat_8, 0);
+    lv_obj_align_to(speed_value_label, dd_speed, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
     // 6. TERMINAL
     terminal = lv_textarea_create(scr);
-    lv_obj_set_size(terminal, 330, 60);
+    lv_obj_set_size(terminal, 325, 60);
     lv_obj_align(terminal, LV_ALIGN_BOTTOM_LEFT, 10, -5);
     lv_textarea_set_text(terminal, "ROS2 terminal ready...\n");
     lv_obj_set_style_text_font(terminal, &lv_font_montserrat_12, 0);
@@ -477,14 +459,11 @@ bool ui_get_cartesian_mode(void) {
     return mode_toggle_btn ? lv_obj_has_state(mode_toggle_btn, LV_STATE_CHECKED) : false;
 }
 
-float ui_get_speed_override(void) {
-    // Найти выбранную кнопку скорости
-    if (speed_btnmatrix) {
-        for (int i = 0; i < 5; i++) {
-            if (lv_btnmatrix_has_btn_ctrl(speed_btnmatrix, i, LV_BTNMATRIX_CTRL_CHECKED)) {
-                return i * 0.25f; // 0, 0.25, 0.5, 0.75, 1.0
-            }
-        }
+float ui_get_speed_override(void)
+{
+    if (dd_speed) {
+        int selected = lv_dropdown_get_selected(dd_speed);
+        return selected * 0.25f;  // 0, 0.25, 0.5, 0.75, 1.0
     }
     return 0.5f;
 }
@@ -529,7 +508,7 @@ void ui_update_speed_display(float speed)
 {
     if (speed_value_label) {
         char buf[16];
-        snprintf(buf, sizeof(buf), "%.0f%%", speed * 100);
+        snprintf(buf, sizeof(buf), "[%.0f]", speed * 100);
         lv_label_set_text(speed_value_label, buf);
     }
 }
@@ -553,11 +532,11 @@ void ui_update_telemetry(float *values, int count, uint8_t state,
         }
     }
     
-    if (speed_btnmatrix) {
+    if (dd_speed) {
         int btn = (int)(speed * 4);
         if (btn < 0) btn = 0;
         if (btn > 4) btn = 4;
-        lv_btnmatrix_set_btn_ctrl(speed_btnmatrix, btn, LV_BTNMATRIX_CTRL_CHECKED);
+        lv_dropdown_set_selected(dd_speed, btn);
     }
 }
 
