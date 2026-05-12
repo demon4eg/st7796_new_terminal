@@ -1,0 +1,445 @@
+#include "ui_manager.h"
+#include "display_config.h"
+#include "touch_input.h"
+#include <esp_log.h>
+#include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <lvgl.h>
+#include <math.h>
+
+static const char *TAG = "ui_manager";
+
+// Display dimensions
+#define DISPLAY_WIDTH   320
+#define DISPLAY_HEIGHT  480
+#define LV_BUFFER_SIZE  (DISPLAY_WIDTH * 25)
+#define LVGL_TICK_MS    5
+
+static lv_disp_draw_buf_t draw_buf;
+static lv_disp_drv_t disp_drv;
+static lv_color_t *buf1 = NULL;
+static lv_color_t *buf2 = NULL;
+static lv_obj_t *meter = NULL;
+static lv_style_t style_screen;
+
+static lv_obj_t * dd_work = NULL;
+static lv_obj_t * dd_tool = NULL;
+static lv_obj_t * dd_state = NULL;
+static lv_obj_t * terminal = NULL;
+static lv_obj_t * state_labels[13] = {NULL};
+static lv_obj_t * mode_toggle_btn = NULL;
+static lv_obj_t * speed_btnmatrix = NULL;
+static float last_vals[13] = {0};
+
+// Forward declarations for event callbacks
+static void dropdown_event_cb(lv_event_t * e);
+static void toggle_button_event_cb(lv_event_t * e);
+static void speed_btnmatrix_event_cb(lv_event_t * e);
+
+// Dropdown event handler
+static void dropdown_event_cb(lv_event_t * e) {
+    lv_obj_t * dropdown = lv_event_get_target(e);
+    int index = lv_dropdown_get_selected(dropdown);
+    
+    if (dropdown == dd_work) {
+        ESP_LOGI(TAG, "Work offset changed to %d", index);
+        // TODO: Send to micro-ros
+    } else if (dropdown == dd_tool) {
+        ESP_LOGI(TAG, "Tool orientation changed to %d", index);
+        // TODO: Send to micro-ros
+    } else if (dropdown == dd_state) {
+        ESP_LOGI(TAG, "Robot state changed to %d", index);
+        // TODO: Send to micro-ros
+    }
+}
+
+// Toggle button event handler
+static void toggle_button_event_cb(lv_event_t * e) {
+    if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
+    
+    lv_obj_t * btn = lv_event_get_target(e);
+    bool is_toggled = lv_obj_has_state(btn, LV_STATE_CHECKED);
+    
+    const char *mode = is_toggled ? "CART" : "JOINT";
+    ESP_LOGI(TAG, "Control mode changed to %s", mode);
+    
+    lv_obj_t *btn_label = lv_obj_get_child(btn, 0);
+    lv_label_set_text(btn_label, mode);
+    // TODO: Send to micro-ros
+}
+
+// Speed button matrix event handler
+static void speed_btnmatrix_event_cb(lv_event_t * e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    
+    if (code == LV_EVENT_VALUE_CHANGED) {
+        lv_obj_t * btnm = lv_event_get_target(e);
+        uint32_t id = lv_btnmatrix_get_selected_btn(btnm);
+        
+        if (id <= 4) {
+            float speed_percent = id * 25.0f;
+            ESP_LOGI(TAG, "Speed changed to %.0f%%", speed_percent);
+            // TODO: Send to micro-ros
+        }
+    }
+}
+
+// Public functions for updating UI from micro-ros
+void ui_set_terminal_text(const char *text)
+{
+    if (terminal) {
+        lv_textarea_add_text(terminal, text);
+        lv_textarea_set_cursor_pos(terminal, LV_TEXTAREA_CURSOR_LAST);
+    }
+}
+
+void ui_update_state_values(float *values, int count)
+{
+    if (count > 13) count = 13;
+    
+    for (int i = 0; i < count; i++) {
+        if (state_labels[i] && fabs(values[i] - last_vals[i]) > 0.01f) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "%.2f", values[i]);
+            lv_label_set_text(state_labels[i], buf);
+            last_vals[i] = values[i];
+        }
+    }
+}
+
+void ui_set_work_offset(int index)
+{
+    if (dd_work) {
+        lv_dropdown_set_selected(dd_work, index);
+    }
+}
+
+void ui_set_tool_orientation(int index)
+{
+    if (dd_tool) {
+        lv_dropdown_set_selected(dd_tool, index);
+    }
+}
+
+void ui_set_robot_state(int index)
+{
+    if (dd_state) {
+        lv_dropdown_set_selected(dd_state, index);
+    }
+}
+
+void ui_set_control_mode(bool is_cartesian)
+{
+    if (mode_toggle_btn) {
+        if (is_cartesian) {
+            lv_obj_add_state(mode_toggle_btn, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(mode_toggle_btn, LV_STATE_CHECKED);
+        }
+    }
+}
+
+void ui_set_speed(float percent)
+{
+    if (speed_btnmatrix) {
+        int btn_id = (int)(percent / 25.0f);
+        if (btn_id < 0) btn_id = 0;
+        if (btn_id > 4) btn_id = 4;
+        lv_btnmatrix_set_btn_ctrl(speed_btnmatrix, btn_id, LV_BTNMATRIX_CTRL_CHECKED);
+    }
+}
+
+void ui_create_robot_control(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+    
+    // Column and row definitions
+    static lv_coord_t col_dsc[] = {80, 75, LV_GRID_TEMPLATE_LAST};
+    static lv_coord_t row_dsc[] = {20, 20, 20, 20, 20, 20, 20, LV_GRID_TEMPLATE_LAST};
+    
+    // Grid container
+    lv_obj_t * cont = lv_obj_create(scr);
+    lv_obj_set_grid_dsc_array(cont, col_dsc, row_dsc);
+    lv_obj_set_size(cont, 250, 180);
+    lv_obj_align(cont, LV_ALIGN_TOP_LEFT, 5, 5);
+    lv_obj_set_style_pad_all(cont, 7, 0);
+    lv_obj_set_style_pad_row(cont, 4, 0);
+    lv_obj_set_style_pad_column(cont, 45, 0);
+    lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
+    
+    // State labels with names
+    const char * names[] = {
+        "X", "Y", "Z", "R", "P", "Y", 
+        "J1", "J2", "J3", "J4", "J5", "J6", "Grip"
+    };
+    
+    for(int i = 0; i < 13; i++) {
+        state_labels[i] = lv_label_create(cont);
+        lv_obj_set_style_text_font(state_labels[i], &lv_font_montserrat_16, 0);
+        
+        int col = (i < 6) ? 0 : 1;
+        int row = (i < 6) ? i : (i - 6);
+        
+        lv_obj_set_grid_cell(state_labels[i], 
+                            LV_GRID_ALIGN_START, col, 1, 
+                            LV_GRID_ALIGN_CENTER, row, 1);
+        
+        lv_label_set_text(state_labels[i], names[i]);
+        last_vals[i] = -9999.0f;
+    }
+    
+    // 1. WORK OFFSETS
+    dd_work = lv_dropdown_create(scr);
+    lv_dropdown_set_options(dd_work, "BASE\nUSER1\nUSER2\nUSER3\nUSER4\nUSER5");
+    lv_obj_set_width(dd_work, 110);
+    lv_obj_set_style_text_font(dd_work, &lv_font_montserrat_14, 0);
+    lv_obj_align(dd_work, LV_ALIGN_TOP_RIGHT, -10, 25);
+    lv_obj_add_event_cb(dd_work, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    
+    lv_obj_t * lbl_work = lv_label_create(scr);
+    lv_label_set_text(lbl_work, "Work Offset:");
+    lv_obj_set_style_text_font(lbl_work, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_work, dd_work, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    
+    // 2. TOOL ORIENTATION
+    dd_tool = lv_dropdown_create(scr);
+    lv_dropdown_set_options(dd_tool, "FLANGE\nTOOL1\nTOOL2\nTOOL3\nTOOL4\nTOOL5\n");
+    lv_obj_set_width(dd_tool, 110);
+    lv_obj_set_style_text_font(dd_tool, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(dd_tool, dd_work, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
+    lv_obj_add_event_cb(dd_tool, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    
+    lv_obj_t * lbl_tool = lv_label_create(scr);
+    lv_label_set_text(lbl_tool, "Tool Orientation:");
+    lv_obj_set_style_text_font(lbl_tool, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_tool, dd_tool, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    
+    // 3. ROBOT STATE
+    dd_state = lv_dropdown_create(scr);
+    lv_dropdown_set_options(dd_state, "ESTOP\nIDLE\nTEACH\nJOG\nAUTO");
+    lv_dropdown_set_selected(dd_state, 3);
+    lv_obj_set_width(dd_state, 110);
+    lv_obj_set_style_text_font(dd_state, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(dd_state, dd_tool, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
+    lv_obj_add_event_cb(dd_state, dropdown_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    
+    lv_obj_t * lbl_state = lv_label_create(scr);
+    lv_label_set_text(lbl_state, "Robot State:");
+    lv_obj_set_style_text_font(lbl_state, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_state, dd_state, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    
+    // 4. MODE TOGGLE BUTTON
+    mode_toggle_btn = lv_btn_create(scr);
+    lv_obj_set_size(mode_toggle_btn, 110, 30);
+    lv_obj_align_to(mode_toggle_btn, dd_state, LV_ALIGN_OUT_BOTTOM_MID, 0, 25);
+    lv_obj_add_flag(mode_toggle_btn, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_add_event_cb(mode_toggle_btn, toggle_button_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    
+    lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
+    lv_obj_set_style_border_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_DEFAULT);
+    lv_obj_set_style_radius(mode_toggle_btn, 8, 0);
+    lv_obj_set_style_bg_color(mode_toggle_btn, lv_palette_main(LV_PALETTE_BLUE), LV_STATE_CHECKED);
+    
+    lv_obj_t * btn_label = lv_label_create(mode_toggle_btn);
+    lv_label_set_text(btn_label, "JOINT");
+    lv_obj_set_style_text_font(btn_label, &lv_font_montserrat_14, 0);
+    lv_obj_center(btn_label);
+    
+    lv_obj_t * lbl_mode = lv_label_create(scr);
+    lv_label_set_text(lbl_mode, "Control Mode:");
+    lv_obj_set_style_text_font(lbl_mode, &lv_font_montserrat_14, 0);
+    lv_obj_align_to(lbl_mode, mode_toggle_btn, LV_ALIGN_OUT_TOP_MID, 0, -5);
+    
+    // 5. SPEED BUTTON MATRIX
+    lv_obj_t * speed_container = lv_obj_create(scr);
+    lv_obj_set_size(speed_container, 280, 70);
+    lv_obj_set_style_bg_opa(speed_container, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(speed_container, 0, 0);
+    lv_obj_set_style_pad_all(speed_container, 0, 0);
+    lv_obj_clear_flag(speed_container, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_align(speed_container, LV_ALIGN_BOTTOM_LEFT, 5, -70);
+    
+    lv_obj_t * speed_title = lv_label_create(speed_container);
+    lv_label_set_text(speed_title, "Speed Override:");
+    lv_obj_set_style_text_font(speed_title, &lv_font_montserrat_14, 0);
+    lv_obj_align(speed_title, LV_ALIGN_TOP_LEFT, 5, 10);
+    lv_obj_set_style_text_color(speed_title, lv_color_white(), 0);
+    
+    static const char * speed_map[] = {"0%", "25%", "50%", "75%", "100%", ""};
+    speed_btnmatrix = lv_btnmatrix_create(speed_container);
+    lv_btnmatrix_set_map(speed_btnmatrix, speed_map);
+    lv_obj_set_size(speed_btnmatrix, 270, 40);
+    lv_obj_align(speed_btnmatrix, LV_ALIGN_BOTTOM_MID, 0, 0);
+    lv_obj_clear_flag(speed_btnmatrix, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(speed_btnmatrix, speed_btnmatrix_event_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    
+    lv_obj_set_style_pad_all(speed_btnmatrix, 2, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(speed_btnmatrix, lv_palette_main(LV_PALETTE_GREEN), LV_PART_ITEMS);
+    lv_obj_set_style_text_color(speed_btnmatrix, lv_color_white(), LV_PART_ITEMS);
+    lv_obj_set_style_radius(speed_btnmatrix, 4, LV_PART_ITEMS);
+    
+    lv_btnmatrix_set_btn_ctrl_all(speed_btnmatrix, LV_BTNMATRIX_CTRL_CHECKABLE);
+    lv_btnmatrix_set_one_checked(speed_btnmatrix, true);
+    lv_btnmatrix_set_btn_ctrl(speed_btnmatrix, 2, LV_BTNMATRIX_CTRL_CHECKED);
+    lv_obj_set_style_bg_color(speed_btnmatrix, lv_palette_main(LV_PALETTE_BLUE), LV_PART_ITEMS | LV_STATE_CHECKED);
+    
+    // 6. TERMINAL
+    terminal = lv_textarea_create(scr);
+    lv_obj_set_size(terminal, 460, 60);
+    lv_obj_align(terminal, LV_ALIGN_BOTTOM_LEFT, 10, -5);
+    lv_textarea_set_text(terminal, "ROS2 terminal ready...\n");
+    lv_obj_set_style_text_font(terminal, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(terminal, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(terminal, lv_color_black(), 0);
+    
+    ESP_LOGI(TAG, "Robot control UI created");
+}
+
+static void update_meter_value(void *indic, int32_t v)
+{
+    lv_meter_set_indicator_end_value(meter, indic, v);
+}
+
+static void lvgl_flush_cb(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color_map)
+{
+    esp_lcd_panel_handle_t panel = display_get_panel_handle();
+    esp_lcd_panel_draw_bitmap(panel, area->x1, area->y1, area->x2 + 1, area->y2 + 1, color_map);
+    lv_disp_flush_ready(drv);
+}
+
+static void IRAM_ATTR lvgl_tick_cb(void *param)
+{
+    lv_tick_inc(LVGL_TICK_MS);
+}
+
+esp_err_t ui_init(void)
+{
+    ESP_LOGI(TAG, "Initializing LVGL");
+    lv_init();
+    
+    // Allocate buffers
+    ESP_LOGI(TAG, "Allocating LVGL buffer: %zu bytes", LV_BUFFER_SIZE * sizeof(lv_color_t));
+    buf1 = (lv_color_t *)heap_caps_malloc(LV_BUFFER_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
+    
+#ifdef USE_DOUBLE_BUFFERING
+    ESP_LOGI(TAG, "Allocating second LVGL buffer");
+    buf2 = (lv_color_t *)heap_caps_malloc(LV_BUFFER_SIZE * sizeof(lv_color_t), MALLOC_CAP_DMA);
+#endif
+    
+    lv_disp_draw_buf_init(&draw_buf, buf1, buf2, LV_BUFFER_SIZE);
+    
+    // Initialize display driver
+    lv_disp_drv_init(&disp_drv);
+    disp_drv.hor_res = DISPLAY_WIDTH;
+    disp_drv.ver_res = DISPLAY_HEIGHT;
+    disp_drv.flush_cb = lvgl_flush_cb;
+    disp_drv.draw_buf = &draw_buf;
+    disp_drv.user_data = display_get_panel_handle();
+    disp_drv.sw_rotate = 1;
+    disp_drv.rotated = LV_DISP_ROT_90; 
+    lv_disp_t *disp = lv_disp_drv_register(&disp_drv);
+    
+    // Initialize touch (if available)
+    esp_err_t ret = touch_init();
+    if (ret == ESP_OK) {
+        static lv_indev_drv_t indev_drv;
+        lv_indev_drv_init(&indev_drv);
+        indev_drv.type = LV_INDEV_TYPE_POINTER;
+        indev_drv.disp = disp;
+        indev_drv.read_cb = touch_driver_read;
+        // Note: touch_driver_read will get the tp handle from its own static variable
+        lv_indev_drv_register(&indev_drv);
+        ESP_LOGI(TAG, "Touch registered with LVGL");
+    } else {
+        ESP_LOGW(TAG, "Touch not available, continuing without touch");
+    }
+    
+    // Create LVGL tick timer
+    const esp_timer_create_args_t timer_args = {
+        .callback = &lvgl_tick_cb,
+        .name = "lvgl_tick"
+    };
+    esp_timer_handle_t tick_timer;
+    ESP_ERROR_CHECK(esp_timer_create(&timer_args, &tick_timer));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(tick_timer, LVGL_TICK_MS * 1000));
+    
+    ESP_LOGI(TAG, "UI initialized");
+    return ESP_OK;
+}
+
+void ui_task_handler(void)
+{
+    lv_timer_handler();
+    vTaskDelay(pdMS_TO_TICKS(10));
+}
+
+void ui_create_demo(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    
+    // Set background color to black
+    lv_style_init(&style_screen);
+    lv_style_set_bg_color(&style_screen, lv_color_black());
+    lv_obj_add_style(scr, &style_screen, LV_STATE_DEFAULT);
+    
+    // Create meter
+    meter = lv_meter_create(scr);
+    lv_obj_center(meter);
+    lv_obj_set_size(meter, 200, 200);
+    
+    // Add scale
+    lv_meter_scale_t *scale = lv_meter_add_scale(meter);
+    lv_meter_set_scale_ticks(meter, scale, 41, 2, 10, lv_palette_main(LV_PALETTE_GREY));
+    lv_meter_set_scale_major_ticks(meter, scale, 8, 4, 15, lv_color_black(), 10);
+    
+    lv_meter_indicator_t *indic;
+    
+    // Add blue arc
+    indic = lv_meter_add_arc(meter, scale, 3, lv_palette_main(LV_PALETTE_BLUE), 0);
+    lv_meter_set_indicator_start_value(meter, indic, 0);
+    lv_meter_set_indicator_end_value(meter, indic, 20);
+    
+    // Add blue scale lines
+    indic = lv_meter_add_scale_lines(meter, scale, lv_palette_main(LV_PALETTE_BLUE), 
+                                     lv_palette_main(LV_PALETTE_BLUE), false, 0);
+    lv_meter_set_indicator_start_value(meter, indic, 0);
+    lv_meter_set_indicator_end_value(meter, indic, 20);
+    
+    // Add red arc
+    indic = lv_meter_add_arc(meter, scale, 3, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_meter_set_indicator_start_value(meter, indic, 80);
+    lv_meter_set_indicator_end_value(meter, indic, 100);
+    
+    // Add red scale lines
+    indic = lv_meter_add_scale_lines(meter, scale, lv_palette_main(LV_PALETTE_RED), 
+                                     lv_palette_main(LV_PALETTE_RED), false, 0);
+    lv_meter_set_indicator_start_value(meter, indic, 80);
+    lv_meter_set_indicator_end_value(meter, indic, 100);
+    
+    // Add needle
+    indic = lv_meter_add_needle_line(meter, scale, 4, lv_palette_main(LV_PALETTE_GREY), -10);
+    
+    // Create animation
+    lv_anim_t a;
+    lv_anim_init(&a);
+    lv_anim_set_exec_cb(&a, (lv_anim_exec_xcb_t)update_meter_value);
+    lv_anim_set_var(&a, indic);
+    lv_anim_set_values(&a, 0, 100);
+    lv_anim_set_time(&a, 2000);
+    lv_anim_set_repeat_delay(&a, 100);
+    lv_anim_set_playback_time(&a, 500);
+    lv_anim_set_playback_delay(&a, 100);
+    lv_anim_set_repeat_count(&a, LV_ANIM_REPEAT_INFINITE);
+    lv_anim_start(&a);
+    
+    ESP_LOGI(TAG, "Demo UI created");
+}
+
+void ui_clear_screen(void)
+{
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_clean(scr);
+}
