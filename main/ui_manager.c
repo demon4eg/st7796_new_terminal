@@ -43,12 +43,19 @@ static void dropdown_event_cb(lv_event_t * e);
 static void toggle_button_event_cb(lv_event_t * e);
 static void speed_btnmatrix_event_cb(lv_event_t * e);
 static ui_command_callback_t command_callback = NULL;
-
+static bool robot_in_motion = false;
 
 // Dropdown event handler
 static void dropdown_event_cb(lv_event_t * e) {
     lv_obj_t * dropdown = lv_event_get_target(e);
     int index = lv_dropdown_get_selected(dropdown);
+    
+    // Block state changes while robot is moving
+    if (dropdown == dd_state && robot_in_motion) {
+        ESP_LOGW(TAG, "Cannot change state while robot is moving!");
+        lv_dropdown_set_selected(dd_state, 1);  // Force back to IDLE
+        return;
+    }
     
     if (command_callback) {
         if (dropdown == dd_work) {
@@ -63,6 +70,11 @@ static void dropdown_event_cb(lv_event_t * e) {
 
 // Toggle button event handler
 static void toggle_button_event_cb(lv_event_t * e) {
+    if (robot_in_motion) {
+        ESP_LOGW(TAG, "Cannot change mode while robot is moving!");
+        return;
+    }
+    
     if (lv_event_get_code(e) != LV_EVENT_VALUE_CHANGED) return;
     
     lv_obj_t * btn = lv_event_get_target(e);
@@ -79,6 +91,11 @@ static void toggle_button_event_cb(lv_event_t * e) {
 // Speed button matrix event handler
 static void speed_dropdown_event_cb(lv_event_t * e)
 {
+    if (robot_in_motion) {
+        ESP_LOGW(TAG, "Cannot change speed while robot is moving!");
+        return;
+    }
+    
     lv_obj_t * dropdown = lv_event_get_target(e);
     int index = lv_dropdown_get_selected(dropdown);
     
@@ -557,6 +574,18 @@ void ui_update_telemetry(float *values, int count, uint8_t state,
     }
 }
 
+void ui_set_motion_state(bool in_motion) {
+    robot_in_motion = in_motion;
+    if (in_motion) {
+        ESP_LOGI(TAG, "Robot in motion - UI controls locked");
+        // Force state dropdown to IDLE during motion
+        //if (dd_state) {
+            lv_dropdown_set_selected(dd_state, 1);  // IDLE
+       // }
+    } else {
+        ESP_LOGI(TAG, "Robot stopped - UI controls unlocked");
+    }
+}
 
 void ui_add_debug_log(const char *message)
 {

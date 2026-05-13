@@ -101,6 +101,7 @@ static void telemetry_callback(const void * msgin)
     ui_update_state_display(msg->state);
     ui_update_mode_display(msg->cartesian_mode);
     ui_update_speed_display(msg->speed_override);
+    ui_set_motion_state(msg->in_motion);
 }
 
 static void ros_ui_request_handler(int type, int id, float value)

@@ -47,5 +47,6 @@ void ui_update_tool_display(uint8_t id);
 void ui_update_mode_display(bool cartesian);
 void ui_update_speed_display(float speed);
 void ui_update_state_display(uint8_t state);
+void ui_set_motion_state(bool in_motion);
 
 #endif
