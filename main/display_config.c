@@ -33,7 +33,7 @@ static const char *TAG = "display_config";
 #define PIN_SPI_MISO    GPIO_NUM_13
 #define PIN_TFT_CS      GPIO_NUM_10
 #define PIN_TFT_DC      GPIO_NUM_9
-#define PIN_TFT_RST     GPIO_NUM_NC
+#define PIN_TFT_RST     GPIO_NUM_38
 #define PIN_TFT_BL      GPIO_NUM_1
 
 static esp_lcd_panel_io_handle_t io_handle = NULL;

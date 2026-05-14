@@ -24,7 +24,8 @@ static lv_color_t *buf2 = NULL;
 static lv_obj_t * dd_work = NULL;
 static lv_obj_t * dd_tool = NULL;
 static lv_obj_t * dd_state = NULL;
-static lv_obj_t * terminal = NULL;
+static lv_obj_t *debug_container = NULL;
+static int max_debug_lines = 10; 
 static lv_obj_t * state_labels[13] = {NULL};
 static lv_obj_t * mode_toggle_btn = NULL;
 static lv_obj_t * dd_speed = NULL;
@@ -41,7 +42,6 @@ static lv_obj_t * speed_value_label = NULL;
 // Forward declarations for event callbacks
 static void dropdown_event_cb(lv_event_t * e);
 static void toggle_button_event_cb(lv_event_t * e);
-static void speed_btnmatrix_event_cb(lv_event_t * e);
 static ui_command_callback_t command_callback = NULL;
 static bool robot_in_motion = false;
 
@@ -104,15 +104,6 @@ static void speed_dropdown_event_cb(lv_event_t * e)
     
     if (command_callback) {
         command_callback(6, 0, speed_percent / 100.0f);
-    }
-}
-
-// Public functions for updating UI from micro-ros
-void ui_set_terminal_text(const char *text)
-{
-    if (terminal) {
-        lv_textarea_add_text(terminal, text);
-        lv_textarea_set_cursor_pos(terminal, LV_TEXTAREA_CURSOR_LAST);
     }
 }
 
@@ -344,14 +335,23 @@ void ui_create_robot_control(void)
     lv_obj_set_style_text_font(speed_value_label, &lv_font_montserrat_8, 0);
     lv_obj_align_to(speed_value_label, dd_speed, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
-    // 6. TERMINAL
-    terminal = lv_textarea_create(scr);
-    lv_obj_set_size(terminal, 325, 60);
-    lv_obj_align(terminal, LV_ALIGN_BOTTOM_LEFT, 10, -5);
-    lv_textarea_set_text(terminal, "ROS2 terminal ready...\n");
-    lv_obj_set_style_text_font(terminal, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(terminal, lv_color_black(), 0);
-    lv_obj_set_style_bg_color(terminal, lv_color_white(), 0);
+        // 6. DEBUG TERMINAL - Scrollable container with colored labels
+    debug_container = lv_obj_create(scr);
+    lv_obj_set_size(debug_container, 325, 80);
+    lv_obj_align(debug_container, LV_ALIGN_BOTTOM_LEFT, 10, -5);
+    lv_obj_set_style_bg_color(debug_container, lv_color_white(), 0);
+    lv_obj_set_style_border_width(debug_container, 1, 0);
+    lv_obj_set_style_pad_all(debug_container, 5, 0);
+    lv_obj_set_flex_flow(debug_container, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_scrollbar_mode(debug_container, LV_SCROLLBAR_MODE_AUTO);
+    
+    // Add title
+    lv_obj_t *title = lv_label_create(debug_container);
+    lv_label_set_text(title, ">>> TERMINAL <<<");
+    lv_obj_set_style_text_color(title, lv_color_black(), 0);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+    
+    ESP_LOGI(TAG, "Debug container created");
     
     ESP_LOGI(TAG, "Robot control UI created");
 }
@@ -456,10 +456,10 @@ void ui_update_container_color(uint8_t state)
             lv_obj_set_style_bg_color(coord_container, lv_color_hex(0xFFFF00), 0);
             break;
         case 2: // TEACH
-            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0xFFA500), 0);
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0x0000FF), 0);
             break;
         case 3: // JOG
-            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0x0000FF), 0);
+            lv_obj_set_style_bg_color(coord_container, lv_color_hex(0xFFFFFF), 0);
             break;
         case 4: // AUTO
             lv_obj_set_style_bg_color(coord_container, lv_color_hex(0x00FF00), 0);
@@ -470,6 +470,50 @@ void ui_update_container_color(uint8_t state)
     }
 }
 
+void ui_add_debug_line(const char *text) {
+    if (!debug_container) return;
+    
+    // Determine color based on message content
+    lv_color_t color;
+    
+    if (strstr(text, "[ERROR]") != NULL) {
+        color = lv_color_make(255, 0, 0);      // Red
+    } else if (strstr(text, "[WARNING]") != NULL) {
+        color = lv_color_make(255, 255, 0);    // Yellow
+    } else if (strstr(text, "[SUCCESS]") != NULL) {
+        color = lv_color_make(0, 255, 0);      // Green
+    } else if (strstr(text, "[DEBUG]") != NULL) {
+        color = lv_color_make(128, 128, 128);  // Gray
+    } else if (strstr(text, "[INFO]") != NULL) {
+        color = lv_color_make(0, 0, 0);        // Black
+    } else {
+        color = lv_color_make(0, 0, 0);        // Default black
+    }
+    
+    // Remove the level tag for cleaner display (optional)
+    const char *display_text = text;
+    const char *bracket = strstr(text, "] ");
+    if (bracket) {
+        display_text = bracket + 2;  // Skip past "] "
+    }
+    
+    // Create label for this line
+    lv_obj_t *line = lv_label_create(debug_container);
+    lv_label_set_text(line, display_text);
+    lv_obj_set_style_text_color(line, color, 0);
+    lv_label_set_long_mode(line, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(line, lv_obj_get_width(debug_container) - 10);
+    lv_obj_set_style_text_font(line, &lv_font_montserrat_12, 0);
+    
+    // Keep only last N lines (max_debug_lines + 1 for title)
+    int child_count = lv_obj_get_child_cnt(debug_container);
+    if (child_count > max_debug_lines + 1) {
+        lv_obj_del(lv_obj_get_child(debug_container, 1));  // Delete oldest (skip title)
+    }
+    
+    // Auto-scroll to bottom
+    lv_obj_scroll_to_y(debug_container, LV_COORD_MAX, LV_ANIM_ON);
+}
 
 void ui_set_command_callback(ui_command_callback_t cb)
 {
@@ -577,13 +621,13 @@ void ui_update_telemetry(float *values, int count, uint8_t state,
 void ui_set_motion_state(bool in_motion) {
     robot_in_motion = in_motion;
     if (in_motion) {
-        ESP_LOGI(TAG, "Robot in motion - UI controls locked");
+        //ESP_LOGI(TAG, "Robot in motion - UI controls locked");
         // Force state dropdown to IDLE during motion
         //if (dd_state) {
             lv_dropdown_set_selected(dd_state, 1);  // IDLE
        // }
     } else {
-        ESP_LOGI(TAG, "Robot stopped - UI controls unlocked");
+       // ESP_LOGI(TAG, "Robot stopped - UI controls unlocked");
     }
 }
 

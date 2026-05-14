@@ -24,6 +24,8 @@ void ui_update_telemetry(float *values, int count, uint8_t state,
                         bool cartesian_mode, float speed_override);
 void ui_add_debug_log(const char *message);
 void ui_set_terminal_text(const char *text);
+void ui_auto_color_terminal_text(const char *text);
+void ui_add_debug_line(const char *text);
 
 // Функции для получения текущего состояния UI
 uint8_t ui_get_tool_id(void);
@@ -48,5 +50,6 @@ void ui_update_mode_display(bool cartesian);
 void ui_update_speed_display(float speed);
 void ui_update_state_display(uint8_t state);
 void ui_set_motion_state(bool in_motion);
+
 
 #endif

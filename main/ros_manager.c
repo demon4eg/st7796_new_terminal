@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,6 +36,22 @@ typedef struct {
     float value;
 } ros_cmd_t;
 
+// ========== DEBUG RATE LIMITING STRUCTURES ==========
+#define MAX_MESSAGE_CACHE 20
+#define MAX_MSG_LEN 256
+#define RATE_LIMIT_MS 100        // Same message: max 10 per second
+#define GLOBAL_RATE_LIMIT_MS 50  // Any message: max 20 per second
+
+typedef struct {
+    char msg[MAX_MSG_LEN];
+    unsigned long timestamp;
+} message_cache_t;
+
+static message_cache_t message_cache[MAX_MESSAGE_CACHE];
+static int message_cache_count = 0;
+static unsigned long last_any_msg_time = 0;
+
+
 static QueueHandle_t ros_cmd_queue;
 
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){ESP_LOGE(TAG, "Failed status on line %d: %d. Aborting.",__LINE__,(int)temp_rc); vTaskDelete(NULL);}}
@@ -57,14 +74,72 @@ static void timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
     }
 }
 
+static unsigned long get_current_ms(void) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec * 1000LL + tv.tv_usec / 1000);
+}
+
+// Rate limiter: returns 1 if message should be dropped, 0 if allowed
+static int is_rate_limited(const char* msg, unsigned long now) {
+    // Global rate limit (prevents any spam)
+    if (now - last_any_msg_time < GLOBAL_RATE_LIMIT_MS) {
+        return 1;  // Drop this message
+    }
+    
+    // Check if this exact message was sent recently
+    for (int i = 0; i < message_cache_count; i++) {
+        if (strcmp(message_cache[i].msg, msg) == 0) {
+            if (now - message_cache[i].timestamp < RATE_LIMIT_MS) {
+                return 1;  // Same message too soon
+            }
+            // Update timestamp
+            message_cache[i].timestamp = now;
+            last_any_msg_time = now;
+            return 0;  // Allowed
+        }
+    }
+    
+    // Add new message to cache (FIFO behavior)
+    if (message_cache_count < MAX_MESSAGE_CACHE) {
+        // Cache not full - add new entry
+        strncpy(message_cache[message_cache_count].msg, msg, MAX_MSG_LEN - 1);
+        message_cache[message_cache_count].msg[MAX_MSG_LEN - 1] = '\0';
+        message_cache[message_cache_count].timestamp = now;
+        message_cache_count++;
+    } else {
+        // Cache full - shift all entries left (remove oldest)
+        for (int i = 1; i < MAX_MESSAGE_CACHE; i++) {
+            memcpy(&message_cache[i-1], &message_cache[i], sizeof(message_cache_t));
+        }
+        // Add new message at the end
+        strncpy(message_cache[MAX_MESSAGE_CACHE-1].msg, msg, MAX_MSG_LEN - 1);
+        message_cache[MAX_MESSAGE_CACHE-1].msg[MAX_MSG_LEN - 1] = '\0';
+        message_cache[MAX_MESSAGE_CACHE-1].timestamp = now;
+    }
+    
+    last_any_msg_time = now;
+    return 0;  // Allowed
+}
+
 void debug_callback(const void * msgin)
 {
     const std_msgs__msg__String * msg = (const std_msgs__msg__String *)msgin;
-
-    if (msg && msg->data.data) {
-        ui_set_terminal_text(msg->data.data);
-        ui_set_terminal_text("\n");
+    
+    if (!msg || !msg->data.data || strlen(msg->data.data) == 0) {
+        return;
     }
+    
+    unsigned long now = get_current_ms();
+    if (is_rate_limited(msg->data.data, now)) {
+        return;
+    }
+    
+    // Add to scrollable container with color
+    ui_add_debug_line(msg->data.data);
+    
+    // Also log to console for debugging
+    ESP_LOGD(TAG, "Debug: %s", msg->data.data);
 }
 
 static void telemetry_callback(const void * msgin)
