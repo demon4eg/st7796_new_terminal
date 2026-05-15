@@ -20,12 +20,13 @@ void ui_clear_screen(void);
 // Функции для обновления UI данными из ROS
 void ui_update_state_values(float *values, int count);
 void ui_update_telemetry(float *values, int count, uint8_t state, 
-                        uint8_t tool_id, uint8_t work_offset_id, 
-                        bool cartesian_mode, float speed_override);
+                        uint8_t tool_id, uint8_t work_offset, 
+                        bool cartesian, float speed,
+                        uint16_t tool_uid, uint8_t tool_type, uint8_t tool_status);
 void ui_add_debug_log(const char *message);
-void ui_set_terminal_text(const char *text);
-void ui_auto_color_terminal_text(const char *text);
 void ui_add_debug_line(const char *text);
+void ui_lock(void);
+void ui_unlock(void);
 
 // Функции для получения текущего состояния UI
 uint8_t ui_get_tool_id(void);
@@ -50,6 +51,5 @@ void ui_update_mode_display(bool cartesian);
 void ui_update_speed_display(float speed);
 void ui_update_state_display(uint8_t state);
 void ui_set_motion_state(bool in_motion);
-
 
 #endif

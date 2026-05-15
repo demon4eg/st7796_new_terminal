@@ -67,6 +67,7 @@ static manipulator_6dof_interfaces__msg__Telemetry telemetry_msg;
 static std_msgs__msg__Int32 hb_msg;
 static std_msgs__msg__String debug_msg;
 
+
 static void timer_callback(rcl_timer_t * timer, int64_t last_call_time) {
     if (timer != NULL) {
         hb_msg.data = esp_timer_get_time() / 1000;
@@ -159,17 +160,18 @@ static void telemetry_callback(const void * msgin)
         display_data[i + 6] = msg->joints[i];
     }
 
-    display_data[12] = msg->gripper;
+    display_data[12] = msg->tool_parameter;
 
-    ui_update_telemetry(
-        display_data, 13,
-        msg->state,
-        msg->tool_id,
-        msg->work_offset_id,
-        msg->cartesian_mode,
-        msg->speed_override
-    );
-
+    ui_update_telemetry(display_data, 13,
+                    msg->state,
+                    msg->tool_id,
+                    msg->work_offset_id,
+                    msg->cartesian_mode,
+                    msg->speed_override,
+                    msg->tool_uid,
+                    msg->tool_type,
+                    msg->tool_status);
+    ui_lock();
     ui_update_container_color(msg->state);
     ui_update_work_display(msg->work_offset_id);
     ui_update_tool_display(msg->tool_id);
@@ -177,6 +179,7 @@ static void telemetry_callback(const void * msgin)
     ui_update_mode_display(msg->cartesian_mode);
     ui_update_speed_display(msg->speed_override);
     ui_set_motion_state(msg->in_motion);
+    ui_unlock();
 }
 
 static void ros_ui_request_handler(int type, int id, float value)

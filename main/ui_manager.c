@@ -7,6 +7,7 @@
 #include <freertos/task.h>
 #include <lvgl.h>
 #include <math.h>
+#include <freertos/semphr.h>
 
 static const char *TAG = "ui_manager";
 
@@ -16,6 +17,7 @@ static const char *TAG = "ui_manager";
 #define LV_BUFFER_SIZE  (DISPLAY_WIDTH * 25)
 #define LVGL_TICK_MS    5
 
+static SemaphoreHandle_t lvgl_mutex = NULL;
 static lv_disp_draw_buf_t draw_buf;
 static lv_disp_drv_t disp_drv;
 static lv_color_t *buf1 = NULL;
@@ -44,6 +46,10 @@ static void dropdown_event_cb(lv_event_t * e);
 static void toggle_button_event_cb(lv_event_t * e);
 static ui_command_callback_t command_callback = NULL;
 static bool robot_in_motion = false;
+
+static lv_obj_t * tool_uid_value = NULL;
+static lv_obj_t * tool_type_value = NULL;
+static lv_obj_t * tool_status_value = NULL;
 
 // Dropdown event handler
 static void dropdown_event_cb(lv_event_t * e) {
@@ -185,22 +191,22 @@ void ui_create_robot_control(void)
     lv_obj_t *scr = lv_scr_act();
     lv_obj_clean(scr);
     
-    // Column and row definitions
-    static lv_coord_t col_dsc[] = {110, 110, LV_GRID_TEMPLATE_LAST};
-    static lv_coord_t row_dsc[] = {20, 20, 20, 20, 20, 20, 20, LV_GRID_TEMPLATE_LAST};
-    
+    // Grid container - Now with more rows for tool info
+    static lv_coord_t col_dsc[] = {120, 120, LV_GRID_TEMPLATE_LAST};
+    static lv_coord_t row_dsc[] = {20, 20, 20, 20, 20, 20, 20, 15, 15, 15, LV_GRID_TEMPLATE_LAST};  // 10 rows
+
     // Grid container
     lv_obj_t * cont = lv_obj_create(scr);
     coord_container = cont; // Container color
     lv_obj_set_grid_dsc_array(cont, col_dsc, row_dsc);
-    lv_obj_set_size(cont, 260, 180);
+    lv_obj_set_size(cont, 290, 245);  // Increased height to 230
     lv_obj_align(cont, LV_ALIGN_TOP_LEFT, 5, 5);
-    lv_obj_set_style_pad_all(cont, 7, 0);
+    lv_obj_set_style_pad_all(cont, 8, 0);
     lv_obj_set_style_pad_row(cont, 4, 0);
     lv_obj_set_style_pad_column(cont, 20, 0);
     lv_obj_clear_flag(cont, LV_OBJ_FLAG_SCROLLABLE);
-    
-    // State labels with names
+
+    // State labels with names (13 items)
     const char * names[] = {
         "X(m): ", "Y(m): ", "Z(m): ", "R(rad): ", "P(rad): ", "Y(rad): ", 
         "J1(°): ", "J2(°): ", "J3(°): ", "J4(°): ", "J5(°): ", "J6(°): ", "T(units): "
@@ -210,7 +216,7 @@ void ui_create_robot_control(void)
         int col = (i < 6) ? 0 : 1;
         int row = (i < 6) ? i : (i - 6);
         
-        // Создаем лейбл с именем
+        // Create name label
         lv_obj_t * name_label = lv_label_create(cont);
         lv_label_set_text(name_label, names[i]);
         lv_obj_set_style_text_font(name_label, &lv_font_montserrat_14, 0);
@@ -219,16 +225,57 @@ void ui_create_robot_control(void)
                             LV_GRID_ALIGN_CENTER, row, 1);
         lv_obj_set_style_text_color(name_label, lv_color_black(), 0);
         
-        // Создаем лейбл со значением (сдвигаем его правее)
+        // Create value label
         state_labels[i] = lv_label_create(cont);
         lv_obj_set_style_text_font(state_labels[i], &lv_font_montserrat_16, 0);
-        lv_obj_set_style_text_color(name_label, lv_color_black(), 0);
+        lv_obj_set_style_text_color(state_labels[i], lv_color_black(), 0);
         lv_obj_set_grid_cell(state_labels[i], 
-                            LV_GRID_ALIGN_END, col, 1,  // ALIGN_END для правой стороны
+                            LV_GRID_ALIGN_END, col, 1,
                             LV_GRID_ALIGN_CENTER, row, 1);
         lv_label_set_text(state_labels[i], "0.00");
         last_vals[i] = -9999.0f;
     }
+
+    // ========== TOOL INFORMATION DISPLAY (Rows 7, 8, 9) ==========
+
+    // Row 7: Tool UID
+    lv_obj_t * tool_uid_name = lv_label_create(cont);
+    lv_label_set_text(tool_uid_name, "Tool UID:");
+    lv_obj_set_style_text_font(tool_uid_name, &lv_font_montserrat_12, 0);
+    lv_obj_set_grid_cell(tool_uid_name, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, 7, 1);
+    lv_obj_set_style_text_color(tool_uid_name, lv_color_black(), 0);
+
+    tool_uid_value = lv_label_create(cont);
+    lv_obj_set_style_text_font(tool_uid_value, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(tool_uid_value, lv_color_black(), 0);
+    lv_obj_set_grid_cell(tool_uid_value, LV_GRID_ALIGN_END, 0, 2, LV_GRID_ALIGN_CENTER, 7, 1);
+    lv_label_set_text(tool_uid_value, "----");
+
+    // Row 8: Tool Type
+    lv_obj_t * tool_type_name = lv_label_create(cont);
+    lv_label_set_text(tool_type_name, "Tool Type:");
+    lv_obj_set_style_text_font(tool_type_name, &lv_font_montserrat_12, 0);
+    lv_obj_set_grid_cell(tool_type_name, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, 8, 1);
+    lv_obj_set_style_text_color(tool_type_name, lv_color_black(), 0);
+
+    tool_type_value = lv_label_create(cont);
+    lv_obj_set_style_text_font(tool_type_value, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(tool_type_value, lv_color_black(), 0);
+    lv_obj_set_grid_cell(tool_type_value, LV_GRID_ALIGN_END, 0, 2, LV_GRID_ALIGN_CENTER, 8, 1);
+    lv_label_set_text(tool_type_value, "NONE");
+
+    // Row 9: Tool Status
+    lv_obj_t * tool_status_name = lv_label_create(cont);
+    lv_label_set_text(tool_status_name, "Status:");
+    lv_obj_set_style_text_font(tool_status_name, &lv_font_montserrat_12, 0);
+    lv_obj_set_grid_cell(tool_status_name, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, 9, 1);
+    lv_obj_set_style_text_color(tool_status_name, lv_color_black(), 0);
+
+    tool_status_value = lv_label_create(cont);
+    lv_obj_set_style_text_font(tool_status_value, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(tool_status_value, lv_color_black(), 0);
+    lv_obj_set_grid_cell(tool_status_value, LV_GRID_ALIGN_END, 0, 2, LV_GRID_ALIGN_CENTER, 9, 1);
+    lv_label_set_text(tool_status_value, "IDLE");
     
     
 
@@ -337,8 +384,8 @@ void ui_create_robot_control(void)
     
         // 6. DEBUG TERMINAL - Scrollable container with colored labels
     debug_container = lv_obj_create(scr);
-    lv_obj_set_size(debug_container, 325, 80);
-    lv_obj_align(debug_container, LV_ALIGN_BOTTOM_LEFT, 10, -5);
+    lv_obj_set_size(debug_container, 325, 62);
+    lv_obj_align(debug_container, LV_ALIGN_BOTTOM_LEFT, 5, -5);
     lv_obj_set_style_bg_color(debug_container, lv_color_white(), 0);
     lv_obj_set_style_border_width(debug_container, 1, 0);
     lv_obj_set_style_pad_all(debug_container, 5, 0);
@@ -368,8 +415,27 @@ static void IRAM_ATTR lvgl_tick_cb(void *param)
     lv_tick_inc(LVGL_TICK_MS);
 }
 
+void ui_lock(void) {
+    if (lvgl_mutex) {
+        xSemaphoreTake(lvgl_mutex, portMAX_DELAY);
+    }
+}
+
+void ui_unlock(void) {
+    if (lvgl_mutex) {
+        xSemaphoreGive(lvgl_mutex);
+    }
+}
+
 esp_err_t ui_init(void)
 {
+    // Create LVGL mutex
+    lvgl_mutex = xSemaphoreCreateMutex();
+    if (lvgl_mutex == NULL) {
+        ESP_LOGE(TAG, "Failed to create LVGL mutex");
+        return ESP_FAIL;
+    }
+
     ESP_LOGI(TAG, "Initializing LVGL");
     lv_init();
     
@@ -425,7 +491,9 @@ esp_err_t ui_init(void)
 
 void ui_task_handler(void)
 {
+    ui_lock();
     lv_timer_handler();
+    ui_unlock();
     vTaskDelay(pdMS_TO_TICKS(10));
 }
 
@@ -472,9 +540,19 @@ void ui_update_container_color(uint8_t state)
 
 void ui_add_debug_line(const char *text) {
     if (!debug_container) return;
+    if (!text) return;
+    
+    // Lock LVGL
+    ui_lock();
+    
+    // Validate container is still valid
+    if (!lv_obj_is_valid(debug_container)) {
+        ui_unlock();
+        return;
+    }
     
     // Determine color based on message content
-    lv_color_t color;
+    lv_color_t color = lv_color_make(0, 0, 0);  // Default black
     
     if (strstr(text, "[ERROR]") != NULL) {
         color = lv_color_make(255, 0, 0);      // Red
@@ -486,33 +564,45 @@ void ui_add_debug_line(const char *text) {
         color = lv_color_make(128, 128, 128);  // Gray
     } else if (strstr(text, "[INFO]") != NULL) {
         color = lv_color_make(0, 0, 0);        // Black
-    } else {
-        color = lv_color_make(0, 0, 0);        // Default black
     }
     
-    // Remove the level tag for cleaner display (optional)
+    // Remove the level tag for cleaner display
     const char *display_text = text;
     const char *bracket = strstr(text, "] ");
     if (bracket) {
-        display_text = bracket + 2;  // Skip past "] "
+        display_text = bracket + 2;
     }
     
-    // Create label for this line
-    lv_obj_t *line = lv_label_create(debug_container);
-    lv_label_set_text(line, display_text);
-    lv_obj_set_style_text_color(line, color, 0);
-    lv_label_set_long_mode(line, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(line, lv_obj_get_width(debug_container) - 10);
-    lv_obj_set_style_text_font(line, &lv_font_montserrat_12, 0);
-    
-    // Keep only last N lines (max_debug_lines + 1 for title)
+    // SAFE DELETION: Count children and delete if too many
     int child_count = lv_obj_get_child_cnt(debug_container);
-    if (child_count > max_debug_lines + 1) {
-        lv_obj_del(lv_obj_get_child(debug_container, 1));  // Delete oldest (skip title)
+    
+    // Delete oldest messages if we exceed limit (keep title + max_debug_lines)
+    while (child_count > max_debug_lines + 1) {
+        lv_obj_t *oldest = lv_obj_get_child(debug_container, 1);  // Skip title at index 0
+        if (oldest && lv_obj_is_valid(oldest)) {
+            lv_obj_del(oldest);
+        }
+        child_count = lv_obj_get_child_cnt(debug_container);
     }
     
-    // Auto-scroll to bottom
-    lv_obj_scroll_to_y(debug_container, LV_COORD_MAX, LV_ANIM_ON);
+    // Create new label
+    lv_obj_t *line = lv_label_create(debug_container);
+    if (line) {
+        lv_label_set_text(line, display_text);
+        lv_obj_set_style_text_color(line, color, 0);
+        lv_label_set_long_mode(line, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(line, lv_obj_get_width(debug_container) - 10);
+        lv_obj_set_style_text_font(line, &lv_font_montserrat_12, 0);
+    }
+    
+    // Force layout update
+    lv_obj_update_layout(debug_container);
+    
+    // Scroll to bottom (no animation to avoid issues)
+    lv_obj_scroll_to_y(debug_container, LV_COORD_MAX, LV_ANIM_OFF);
+    
+    // Unlock
+    ui_unlock();
 }
 
 void ui_set_command_callback(ui_command_callback_t cb)
@@ -591,10 +681,25 @@ void ui_update_speed_display(float speed)
     }
 }
 
+// Tool type to string conversion
+static const char* tool_type_to_string(uint8_t type) {
+    const char* types[] = {"NONE", "GRIPPER", "DISPENSER", "VACUUM", "UART"};
+    if (type <= 4) return types[type];
+    return "UNKNOWN";
+}
+
+// Tool status to string conversion
+static const char* tool_status_to_string(uint8_t status) {
+    const char* statuses[] = {"IDLE", "ATTACHING", "ATTACHED", "RELEASING", "ERROR"};
+    if (status <= 4) return statuses[status];
+    return "UNKNOWN";
+}
+
 // Обновление из ROS
 void ui_update_telemetry(float *values, int count, uint8_t state, 
                         uint8_t tool_id, uint8_t work_offset, 
-                        bool cartesian, float speed)
+                        bool cartesian, float speed,
+                        uint16_t tool_uid, uint8_t tool_type, uint8_t tool_status)
 {
     ui_update_state_values(values, count);
     
@@ -616,6 +721,31 @@ void ui_update_telemetry(float *values, int count, uint8_t state,
         if (btn > 4) btn = 4;
         lv_dropdown_set_selected(dd_speed, btn);
     }
+    
+    // Update tool info display
+    if (tool_uid_value) {
+        char buf[16];
+        if (tool_uid == 0) {
+            snprintf(buf, sizeof(buf), "NONE");
+        } else {
+            snprintf(buf, sizeof(buf), "%05u", tool_uid);
+        }
+        lv_label_set_text(tool_uid_value, buf);
+    }
+    
+    if (tool_type_value) {
+        lv_label_set_text(tool_type_value, tool_type_to_string(tool_type));
+    }
+    
+    if (tool_status_value) {
+        lv_color_t status_color = lv_color_make(0, 0, 0);
+        if (tool_status == 2) status_color = lv_color_make(0, 255, 0);
+        if (tool_status == 4) status_color = lv_color_make(255, 0, 0);
+        if (tool_status == 1 || tool_status == 3) status_color = lv_color_make(255, 255, 0);
+        
+        lv_obj_set_style_text_color(tool_status_value, status_color, 0);
+        lv_label_set_text(tool_status_value, tool_status_to_string(tool_status));
+    }
 }
 
 void ui_set_motion_state(bool in_motion) {
@@ -629,10 +759,4 @@ void ui_set_motion_state(bool in_motion) {
     } else {
        // ESP_LOGI(TAG, "Robot stopped - UI controls unlocked");
     }
-}
-
-void ui_add_debug_log(const char *message)
-{
-    ui_set_terminal_text(message);
-    ui_set_terminal_text("\n");
 }

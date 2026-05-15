@@ -1,6 +1,0 @@
-{
-    "[gpp]": {
-        "editor.defaultFormatter": "anzory.vscode-gppl-support",
-        "files.encoding": "windows1251"
-    }
-}
