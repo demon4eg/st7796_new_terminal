@@ -429,7 +429,7 @@ void ui_create_robot_control(void)
     
         // 6. DEBUG TERMINAL - Scrollable container with colored labels
     debug_container = lv_obj_create(scr);
-    lv_obj_set_size(debug_container, 325, 62);
+    lv_obj_set_size(debug_container, 335, 62);
     lv_obj_align(debug_container, LV_ALIGN_BOTTOM_LEFT, 5, -5);
     lv_obj_set_style_bg_color(debug_container, lv_color_white(), 0);
     lv_obj_set_style_border_width(debug_container, 1, 0);
@@ -437,6 +437,13 @@ void ui_create_robot_control(void)
     lv_obj_set_flex_flow(debug_container, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_scrollbar_mode(debug_container, LV_SCROLLBAR_MODE_AUTO);
     
+    // Disable horizontal scroll, keep only vertical
+    lv_obj_set_scroll_dir(debug_container, LV_DIR_VER);  // Only vertical scrolling
+    lv_obj_set_style_radius(debug_container, 5, 0);      // Optional: rounded corners
+
+    // Ensure labels wrap text instead of scrolling horizontally
+    lv_obj_set_style_flex_cross_place(debug_container, LV_FLEX_ALIGN_START, 0);
+
     // Add title
     lv_obj_t *title = lv_label_create(debug_container);
     lv_label_set_text(title, ">>> TERMINAL <<<");
