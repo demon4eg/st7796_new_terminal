@@ -50,6 +50,7 @@ typedef struct {
 static message_cache_t message_cache[MAX_MESSAGE_CACHE];
 static int message_cache_count = 0;
 static unsigned long last_any_msg_time = 0;
+static uint8_t pending_action_trigger = 0;
 
 
 static QueueHandle_t ros_cmd_queue;
@@ -286,7 +287,9 @@ static void micro_ros_task(void * arg)
                 case 5: cmd_msg.cartesian_mode = (cmd.id == 1); break;
                 case 6: cmd_msg.speed_override = cmd.value; break;
                 case 7: cmd_msg.estop = (cmd.id == 1); break;
-                case 8: cmd_msg.action_trigger = (uint8_t)cmd.id; break;
+                case 8: 
+                    cmd_msg.action_trigger = (uint8_t)cmd.id;  // Store trigger
+                    break;
             }
 
             RCSOFTCHECK(rcl_publish(&cmd_pub, &cmd_msg, NULL));

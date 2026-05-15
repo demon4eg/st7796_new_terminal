@@ -113,6 +113,21 @@ static void speed_dropdown_event_cb(lv_event_t * e)
     }
 }
 
+// Tool button callbacks (regular C functions)
+static void attach_btn_cb(lv_event_t * e) {
+    if (command_callback) {
+        command_callback(8, 3, 0);  // action_trigger = 3 (attach)
+        ESP_LOGI(TAG, "ATTACH button pressed - trigger=3");
+    }
+}
+
+static void detach_btn_cb(lv_event_t * e) {
+    if (command_callback) {
+        command_callback(8, 4, 0);  // action_trigger = 4 (detach)
+        ESP_LOGI(TAG, "DETACH button pressed - trigger=4");
+    }
+}
+
 void ui_update_state_values(float *values, int count)
 {
     if (count > 13) count = 13;
@@ -192,14 +207,14 @@ void ui_create_robot_control(void)
     lv_obj_clean(scr);
     
     // Grid container - Now with more rows for tool info
-    static lv_coord_t col_dsc[] = {120, 120, LV_GRID_TEMPLATE_LAST};
+    static lv_coord_t col_dsc[] = {105, 110, LV_GRID_TEMPLATE_LAST};
     static lv_coord_t row_dsc[] = {20, 20, 20, 20, 20, 20, 20, 15, 15, 15, LV_GRID_TEMPLATE_LAST};  // 10 rows
 
     // Grid container
     lv_obj_t * cont = lv_obj_create(scr);
     coord_container = cont; // Container color
     lv_obj_set_grid_dsc_array(cont, col_dsc, row_dsc);
-    lv_obj_set_size(cont, 290, 245);  // Increased height to 230
+    lv_obj_set_size(cont, 262, 245);  // Increased height to 230
     lv_obj_align(cont, LV_ALIGN_TOP_LEFT, 5, 5);
     lv_obj_set_style_pad_all(cont, 8, 0);
     lv_obj_set_style_pad_row(cont, 4, 0);
@@ -266,7 +281,7 @@ void ui_create_robot_control(void)
 
     // Row 9: Tool Status
     lv_obj_t * tool_status_name = lv_label_create(cont);
-    lv_label_set_text(tool_status_name, "Status:");
+    lv_label_set_text(tool_status_name, "Tool Status:");
     lv_obj_set_style_text_font(tool_status_name, &lv_font_montserrat_12, 0);
     lv_obj_set_grid_cell(tool_status_name, LV_GRID_ALIGN_START, 0, 1, LV_GRID_ALIGN_CENTER, 9, 1);
     lv_obj_set_style_text_color(tool_status_name, lv_color_black(), 0);
@@ -277,8 +292,6 @@ void ui_create_robot_control(void)
     lv_obj_set_grid_cell(tool_status_value, LV_GRID_ALIGN_END, 0, 2, LV_GRID_ALIGN_CENTER, 9, 1);
     lv_label_set_text(tool_status_value, "IDLE");
     
-    
-
     // 1. WORK OFFSETS
     dd_work = lv_dropdown_create(scr);
     lv_dropdown_set_options(dd_work, "BASE\nUSER1\nUSER2\nUSER3\nUSER4\nUSER5");
@@ -314,6 +327,38 @@ void ui_create_robot_control(void)
     lv_label_set_text(lbl_tool, "Tool Orientation:");
     lv_obj_set_style_text_font(lbl_tool, &lv_font_montserrat_14, 0);
     lv_obj_align_to(lbl_tool, dd_tool, LV_ALIGN_OUT_TOP_RIGHT, 23, -5);
+    
+    // 2.1 tool buttons (attach/detach) - for future use, currently just display
+    
+    // Create vertical container for buttons (one under another)
+    lv_obj_t * tool_btn_cont = lv_obj_create(scr);
+    lv_obj_set_size(tool_btn_cont, 75, 75);  // Width 80, Height 75 for two buttons
+    lv_obj_align_to(tool_btn_cont, dd_tool, LV_ALIGN_OUT_LEFT_MID, 0, 0);
+    lv_obj_set_style_bg_color(tool_btn_cont, lv_color_white(), 0);
+    lv_obj_set_style_border_width(tool_btn_cont, 0, 0);
+    lv_obj_set_flex_flow(tool_btn_cont, LV_FLEX_FLOW_COLUMN);  // Column layout
+    lv_obj_set_flex_align(tool_btn_cont, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_all(tool_btn_cont, 2, 0);
+
+    // Attach button (top)
+    lv_obj_t * attach_btn = lv_btn_create(tool_btn_cont);
+    lv_obj_set_size(attach_btn, 60, 30);
+    lv_obj_set_style_bg_color(attach_btn, lv_color_make(0, 150, 0), 0);  // Green
+    lv_obj_t * attach_label = lv_label_create(attach_btn);
+    lv_label_set_text(attach_label, "ATTACH");
+    lv_obj_set_style_text_font(attach_label, &lv_font_montserrat_12, 0);
+    lv_obj_center(attach_label);
+    lv_obj_add_event_cb(attach_btn, attach_btn_cb, LV_EVENT_CLICKED, NULL);  // Use named function
+
+    // Detach button (bottom)
+    lv_obj_t * detach_btn = lv_btn_create(tool_btn_cont);
+    lv_obj_set_size(detach_btn, 60, 30);
+    lv_obj_set_style_bg_color(detach_btn, lv_color_make(200, 0, 0), 0);  // Red
+    lv_obj_t * detach_label = lv_label_create(detach_btn);
+    lv_label_set_text(detach_label, "DETACH");
+    lv_obj_set_style_text_font(detach_label, &lv_font_montserrat_12, 0);
+    lv_obj_center(detach_label);
+    lv_obj_add_event_cb(detach_btn, detach_btn_cb, LV_EVENT_CLICKED, NULL);  // Use named function
     
     // 3. ROBOT STATE
     dd_state = lv_dropdown_create(scr);
@@ -738,13 +783,9 @@ void ui_update_telemetry(float *values, int count, uint8_t state,
     }
     
     if (tool_status_value) {
-        lv_color_t status_color = lv_color_make(0, 0, 0);
-        if (tool_status == 2) status_color = lv_color_make(0, 255, 0);
-        if (tool_status == 4) status_color = lv_color_make(255, 0, 0);
-        if (tool_status == 1 || tool_status == 3) status_color = lv_color_make(255, 255, 0);
-        
-        lv_obj_set_style_text_color(tool_status_value, status_color, 0);
-        lv_label_set_text(tool_status_value, tool_status_to_string(tool_status));
+    // Status text color - always black for readability on colored backgrounds
+    lv_obj_set_style_text_color(tool_status_value, lv_color_make(0, 0, 0), 0);
+    lv_label_set_text(tool_status_value, tool_status_to_string(tool_status));
     }
 }
 
