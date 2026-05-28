@@ -24,6 +24,27 @@ static const char *TAG = "ui_manager";
 #define TERMINAL_MSG_LEN 128
 #define TERMINAL_HISTORY_SIZE 1500
 
+typedef struct {
+    float values[13];
+    uint8_t state;
+    uint8_t tool_id;
+    uint8_t work_offset_id;
+    bool cartesian_mode;
+    float speed_override;
+    uint16_t tool_uid;
+    uint8_t tool_type;
+    uint8_t tool_status;
+    bool in_motion;
+    bool pending_update; // Флаг наличия новых данных от ROS
+} ros_telemetry_data_t;
+
+// Прототипы функций перевода типов в строки (добавьте наверх файла)
+static const char* tool_type_to_string(uint8_t type);
+static const char* tool_status_to_string(uint8_t status);
+
+static ros_telemetry_data_t shared_telemetry = {0};
+
+
 static char terminal_history_buffer[TERMINAL_HISTORY_SIZE] = ">>> TERMINAL READY <<<\n";
 static bool history_has_new_data = false;
 
@@ -563,60 +584,92 @@ void ui_task_handler(void)
 {
     ui_lock();
 
+    // 1. Обработка очереди логов терминала (работает как часы)
     char incoming_msg[TERMINAL_MSG_LEN];
-
-    // 1. Выгребаем логи из очереди FreeRTOS прямо в буфер RAM, не затрагивая виджеты
     if (terminal_log_queue) {
         while (xQueueReceive(terminal_log_queue, incoming_msg, 0) == pdTRUE) {
-            
-            // Проверяем, не переполнится ли наш буфер истории логов (оставляем запас)
             if (strlen(terminal_history_buffer) + strlen(incoming_msg) + 2 >= TERMINAL_HISTORY_SIZE) {
-                
-                // Находим позицию смещения (удаляем старую половину логов для освобождения места)
                 size_t offset = strlen(terminal_history_buffer) - 512;
                 const char *clean_start = strchr(&terminal_history_buffer[offset], '\n');
-                
                 if (clean_start) {
                     size_t tail_len = strlen(clean_start + 1);
                     const char *header = ">>> LOGS FLUSHED <<<\n";
                     size_t header_len = strlen(header);
-                    
-                    // Безопасно формируем новый кусок истории прямо в RAM
                     memcpy(terminal_history_buffer, header, header_len);
                     memmove(&terminal_history_buffer[header_len], clean_start + 1, tail_len + 1);
                 } else {
                     strcpy(terminal_history_buffer, ">>> LOGS FLUSHED <<<\n");
                 }
             }
-
-            // Дописываем новое сообщение (сохраняя префиксы [ERROR], [INFO] и длинный текст)
             strcat(terminal_history_buffer, incoming_msg);
             strcat(terminal_history_buffer, "\n");
-            
             history_has_new_data = true;
         }
     }
 
-    // 2. Безопасное атомарное обновление интерфейса
+    // 2. Безопасная отрисовка элементов ТЕРМИНАЛА и ТЕЛЕМЕТРИИ
     if (debug_container && lv_obj_is_valid(debug_container)) {
         
-        // Если пользователь СЕЙЧАС касается экрана или листает логи вверх пальцем:
-        if (lv_obj_has_state(debug_container, LV_STATE_PRESSED)) {
-            // МЫ НЕ ТРОГАЕМ ВИДЖЕТ. Логи спокойно копятся в terminal_history_buffer в фоне.
-            // Это дает вам 100% плавный скроллинг без фризов интерфейса!
+        // КРИТИЧЕСКИЙ ЗАПРЕТ: Если пользователь активно взаимодействует с дисплеем
+        // (держит палец на терминале или открыл Dropdown меню), мы СТОПИМ обновления экрана,
+        // предотвращая 100% зависаний движка графики!
+        if (lv_obj_has_state(debug_container, LV_STATE_PRESSED) || lv_dropdown_is_open(dd_state) || 
+            lv_dropdown_is_open(dd_work) || lv_dropdown_is_open(dd_tool) || lv_dropdown_is_open(dd_speed)) {
+            // Графика заблокирована для обновлений, данные просто лежат в RAM. Идеальная отзывчивость!
         } 
-        // Если экран отпущен и у нас накопились свежие логи за время касания:
-        else if (history_has_new_data) {
-            
-            // Атомарно обновляем весь текст одной операцией. Занимает < 1 мс.
-            lv_textarea_set_text(debug_container, terminal_history_buffer);
-            
-            // Сдвигаем невидимый курсор в самый конец текста
-            lv_textarea_set_cursor_pos(debug_container, LV_TEXTAREA_CURSOR_LAST);
-            // Заставляем текстовое поле сфокусировать область видимости на конце логов
-            lv_obj_scroll_to_view(debug_container, LV_ANIM_OFF);
-            
-            history_has_new_data = false;
+        else {
+            // Если палец отпущен — обновляем логи
+            if (history_has_new_data) {
+                lv_textarea_set_text(debug_container, terminal_history_buffer);
+                lv_textarea_set_cursor_pos(debug_container, LV_TEXTAREA_CURSOR_LAST);
+                lv_obj_scroll_to_view(debug_container, LV_ANIM_OFF);
+                history_has_new_data = false;
+            }
+
+            // ЕСЛИ ПРИШЛА ТЕЛЕМЕТРИЯ ИЗ РОС — ОБНОВЛЯЕМ ЭКРАН В РОДНОМ ПОТОКЕ!
+            if (shared_telemetry.pending_update) {
+                ui_update_state_values(shared_telemetry.values, 13);
+                ui_update_container_color(shared_telemetry.state);
+                ui_update_work_display(shared_telemetry.work_offset_id);
+                ui_update_tool_display(shared_telemetry.tool_id);
+                ui_update_state_display(shared_telemetry.state);
+                ui_update_mode_display(shared_telemetry.cartesian_mode);
+                ui_update_speed_display(shared_telemetry.speed_override);
+                ui_set_motion_state(shared_telemetry.in_motion);
+
+                // Синхронизируем выпадающие списки
+                if (dd_state) lv_dropdown_set_selected(dd_state, shared_telemetry.state);
+                if (dd_tool) lv_dropdown_set_selected(dd_tool, shared_telemetry.tool_id);
+                if (dd_work) lv_dropdown_set_selected(dd_work, shared_telemetry.work_offset_id);
+
+                if (mode_toggle_btn) {
+                    if (shared_telemetry.cartesian_mode) lv_obj_add_state(mode_toggle_btn, LV_STATE_CHECKED);
+                    else lv_obj_clear_state(mode_toggle_btn, LV_STATE_CHECKED);
+                }
+
+                if (dd_speed) {
+                    int btn = (int)(shared_telemetry.speed_override * 4);
+                        if (btn < 0) {
+                            btn = 0;
+                            }
+                        if (btn > 4) {
+                            btn = 4;
+                            }
+
+                    lv_dropdown_set_selected(dd_speed, btn);
+                }
+
+                if (tool_uid_value) {
+                    char buf[16];
+                    if (shared_telemetry.tool_uid == 0) strcpy(buf, "NONE");
+                    else snprintf(buf, sizeof(buf), "%05u", shared_telemetry.tool_uid);
+                    lv_label_set_text(tool_uid_value, buf);
+                }
+                if (tool_type_value) lv_label_set_text(tool_type_value, tool_type_to_string(shared_telemetry.tool_type));
+                if (tool_status_value) lv_label_set_text(tool_status_value, tool_status_to_string(shared_telemetry.tool_status));
+
+                shared_telemetry.pending_update = false; // Сбрасываем флаг
+            }
         }
     }
 
@@ -624,6 +677,7 @@ void ui_task_handler(void)
     ui_unlock();
     vTaskDelay(pdMS_TO_TICKS(10));
 }
+
 
 
 void ui_clear_screen(void)
@@ -772,53 +826,24 @@ static const char* tool_status_to_string(uint8_t status) {
 }
 
 // Обновление из ROS
-void ui_update_telemetry(float *values, int count, uint8_t state, 
-                        uint8_t tool_id, uint8_t work_offset, 
-                        bool cartesian, float speed,
-                        uint16_t tool_uid, uint8_t tool_type, uint8_t tool_status)
+void ui_set_ros_telemetry_data(float *values, uint8_t state, uint8_t tool_id, uint8_t work_offset,
+                               bool cartesian, float speed, uint16_t tool_uid, uint8_t tool_type, 
+                               uint8_t tool_status, bool in_motion) 
 {
-    ui_update_state_values(values, count);
-    
-    if (dd_state) lv_dropdown_set_selected(dd_state, state);
-    if (dd_tool) lv_dropdown_set_selected(dd_tool, tool_id);
-    if (dd_work) lv_dropdown_set_selected(dd_work, work_offset);
-    
-    if (mode_toggle_btn) {
-        if (cartesian) {
-            lv_obj_add_state(mode_toggle_btn, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(mode_toggle_btn, LV_STATE_CHECKED);
-        }
-    }
-    
-    if (dd_speed) {
-        int btn = (int)(speed * 4);
-        if (btn < 0) btn = 0;
-        if (btn > 4) btn = 4;
-        lv_dropdown_set_selected(dd_speed, btn);
-    }
-    
-    // Update tool info display
-    if (tool_uid_value) {
-        char buf[16];
-        if (tool_uid == 0) {
-            snprintf(buf, sizeof(buf), "NONE");
-        } else {
-            snprintf(buf, sizeof(buf), "%05u", tool_uid);
-        }
-        lv_label_set_text(tool_uid_value, buf);
-    }
-    
-    if (tool_type_value) {
-        lv_label_set_text(tool_type_value, tool_type_to_string(tool_type));
-    }
-    
-    if (tool_status_value) {
-    // Status text color - always black for readability on colored backgrounds
-    lv_obj_set_style_text_color(tool_status_value, lv_color_make(0, 0, 0), 0);
-    lv_label_set_text(tool_status_value, tool_status_to_string(tool_status));
-    }
+    // Быстро копируем данные напрямую в RAM, не трогая мьютексы и графику LVGL!
+    memcpy(shared_telemetry.values, values, sizeof(shared_telemetry.values));
+    shared_telemetry.state = state;
+    shared_telemetry.tool_id = tool_id;
+    shared_telemetry.work_offset_id = work_offset;
+    shared_telemetry.cartesian_mode = cartesian;
+    shared_telemetry.speed_override = speed;
+    shared_telemetry.tool_uid = tool_uid;
+    shared_telemetry.tool_type = tool_type;
+    shared_telemetry.tool_status = tool_status;
+    shared_telemetry.in_motion = in_motion;
+    shared_telemetry.pending_update = true; // Сигнализируем графическому потоку
 }
+
 
 void ui_set_motion_state(bool in_motion) {
     robot_in_motion = in_motion;

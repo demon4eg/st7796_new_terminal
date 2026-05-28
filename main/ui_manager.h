@@ -51,5 +51,8 @@ void ui_update_mode_display(bool cartesian);
 void ui_update_speed_display(float speed);
 void ui_update_state_display(uint8_t state);
 void ui_set_motion_state(bool in_motion);
+void ui_set_ros_telemetry_data(float *values, uint8_t state, uint8_t tool_id, uint8_t work_offset,
+                               bool cartesian, float speed, uint16_t tool_uid, uint8_t tool_type, 
+                               uint8_t tool_status, bool in_motion);
 
 #endif

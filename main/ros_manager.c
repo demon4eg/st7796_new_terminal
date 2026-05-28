@@ -156,32 +156,24 @@ static void telemetry_callback(const void * msgin)
     for(int i = 0; i < 6; i++) {
         display_data[i] = msg->xyzrpy[i];
     }
-
     for(int i = 0; i < 6; i++) {
         display_data[i + 6] = msg->joints[i];
     }
-
     display_data[12] = msg->tool_parameter;
 
-    ui_update_telemetry(display_data, 13,
-                    msg->state,
-                    msg->tool_id,
-                    msg->work_offset_id,
-                    msg->cartesian_mode,
-                    msg->speed_override,
-                    msg->tool_uid,
-                    msg->tool_type,
-                    msg->tool_status);
-    ui_lock();
-    ui_update_container_color(msg->state);
-    ui_update_work_display(msg->work_offset_id);
-    ui_update_tool_display(msg->tool_id);
-    ui_update_state_display(msg->state);
-    ui_update_mode_display(msg->cartesian_mode);
-    ui_update_speed_display(msg->speed_override);
-    ui_set_motion_state(msg->in_motion);
-    ui_unlock();
+    // ПРОСТО КИДАЕМ ДАННЫЕ В СТРУКТУРУ ПАМЯТИ. НИКАКИХ UI_LOCK И ВЫЗОВОВ LVGL!
+    ui_set_ros_telemetry_data(display_data,
+                              msg->state,
+                              msg->tool_id,
+                              msg->work_offset_id,
+                              msg->cartesian_mode,
+                              msg->speed_override,
+                              msg->tool_uid,
+                              msg->tool_type,
+                              msg->tool_status,
+                              msg->in_motion);
 }
+
 
 static void ros_ui_request_handler(int type, int id, float value)
 {
