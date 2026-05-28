@@ -39,8 +39,8 @@ typedef struct {
 // ========== DEBUG RATE LIMITING STRUCTURES ==========
 #define MAX_MESSAGE_CACHE 20
 #define MAX_MSG_LEN 256
-#define RATE_LIMIT_MS 100        // Same message: max 10 per second
-#define GLOBAL_RATE_LIMIT_MS 50  // Any message: max 20 per second
+#define RATE_LIMIT_MS 200        // Same message: max 10 per second
+#define GLOBAL_RATE_LIMIT_MS 100  // Any message: max 20 per second
 
 typedef struct {
     char msg[MAX_MSG_LEN];

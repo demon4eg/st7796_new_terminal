@@ -17,6 +17,13 @@ static const char *TAG = "ui_manager";
 #define LV_BUFFER_SIZE  (DISPLAY_WIDTH * 25)
 #define LVGL_TICK_MS    5
 
+#define TERMINAL_MAX_LINES 6
+#define TERMINAL_LINE_LEN   64
+#define TERMINAL_QUEUE_LEN 10
+#define TERMINAL_MSG_LEN   128
+
+static QueueHandle_t terminal_log_queue = NULL;
+
 static SemaphoreHandle_t lvgl_mutex = NULL;
 static lv_disp_draw_buf_t draw_buf;
 static lv_disp_drv_t disp_drv;
@@ -27,7 +34,7 @@ static lv_obj_t * dd_work = NULL;
 static lv_obj_t * dd_tool = NULL;
 static lv_obj_t * dd_state = NULL;
 static lv_obj_t *debug_container = NULL;
-static int max_debug_lines = 10; 
+
 static lv_obj_t * state_labels[13] = {NULL};
 static lv_obj_t * mode_toggle_btn = NULL;
 static lv_obj_t * dd_speed = NULL;
@@ -427,30 +434,27 @@ void ui_create_robot_control(void)
     lv_obj_set_style_text_font(speed_value_label, &lv_font_montserrat_8, 0);
     lv_obj_align_to(speed_value_label, dd_speed, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
-        // 6. DEBUG TERMINAL - Scrollable container with colored labels
-    debug_container = lv_obj_create(scr);
-    lv_obj_set_size(debug_container, 335, 62);
+        // 6. DEBUG TERMINAL
+    debug_container = lv_textarea_create(scr);
+    lv_obj_set_size(debug_container, 335, 65);
     lv_obj_align(debug_container, LV_ALIGN_BOTTOM_LEFT, 5, -5);
+    
+    // НАСТРОЙКА ВЗАИМОДЕЙСТВИЯ ДЛЯ LVGL v8:
+    lv_obj_add_flag(debug_container, LV_OBJ_FLAG_CLICKABLE);       // РАЗРЕШАЕМ клики, чтобы работал скролл пальцем!
+    lv_obj_clear_flag(debug_container, LV_OBJ_FLAG_CLICK_FOCUSABLE); // ЗАПРЕЩАЕМ фокус при клике (курсор не появится)
+    lv_obj_add_flag(debug_container, LV_OBJ_FLAG_SCROLLABLE);       // Разрешаем прокрутку контейнера
+    
+    // Включаем отображение полосы прокрутки только во время прокрутки (так удобнее пальцем)
+    lv_obj_set_scrollbar_mode(debug_container, LV_SCROLLBAR_MODE_AUTO); 
+    
+    lv_obj_set_style_text_font(debug_container, &lv_font_montserrat_12, 0);
     lv_obj_set_style_bg_color(debug_container, lv_color_white(), 0);
-    lv_obj_set_style_border_width(debug_container, 1, 0);
-    lv_obj_set_style_pad_all(debug_container, 5, 0);
-    lv_obj_set_flex_flow(debug_container, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_scrollbar_mode(debug_container, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_text_color(debug_container, lv_color_black(), 0);
+    lv_obj_set_style_radius(debug_container, 5, 0);
     
-    // Disable horizontal scroll, keep only vertical
-    lv_obj_set_scroll_dir(debug_container, LV_DIR_VER);  // Only vertical scrolling
-    lv_obj_set_style_radius(debug_container, 5, 0);      // Optional: rounded corners
+    lv_textarea_set_text(debug_container, ">>> TERMINAL READY <<<\n");
 
-    // Ensure labels wrap text instead of scrolling horizontally
-    lv_obj_set_style_flex_cross_place(debug_container, LV_FLEX_ALIGN_START, 0);
-
-    // Add title
-    lv_obj_t *title = lv_label_create(debug_container);
-    lv_label_set_text(title, ">>> TERMINAL <<<");
-    lv_obj_set_style_text_color(title, lv_color_black(), 0);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
-    
-    ESP_LOGI(TAG, "Debug container created");
+    ESP_LOGI(TAG, "Debug text area initialized with scrolling");
     
     ESP_LOGI(TAG, "Robot control UI created");
 }
@@ -481,6 +485,13 @@ void ui_unlock(void) {
 
 esp_err_t ui_init(void)
 {
+    // Создаем очередь для терминала
+    terminal_log_queue = xQueueCreate(TERMINAL_QUEUE_LEN, TERMINAL_MSG_LEN);
+    if (terminal_log_queue == NULL) {
+        ESP_LOGE(TAG, "Failed to create terminal log queue");
+        return ESP_FAIL;
+    }
+
     // Create LVGL mutex
     lvgl_mutex = xSemaphoreCreateMutex();
     if (lvgl_mutex == NULL) {
@@ -544,10 +555,53 @@ esp_err_t ui_init(void)
 void ui_task_handler(void)
 {
     ui_lock();
+
+    char incoming_msg[TERMINAL_MSG_LEN];
+    bool code_updated = false;
+
+    if (terminal_log_queue) {
+        while (xQueueReceive(terminal_log_queue, incoming_msg, 0) == pdTRUE) {
+            if (debug_container && lv_obj_is_valid(debug_container)) {
+                char formatted[TERMINAL_MSG_LEN + 2];
+                snprintf(formatted, sizeof(formatted), "%s\n", incoming_msg);
+                
+                lv_textarea_add_text(debug_container, formatted);
+                code_updated = true;
+            }
+        }
+    }
+
+    if (code_updated && debug_container && lv_obj_is_valid(debug_container)) {
+        const char *current_text = lv_textarea_get_text(debug_container);
+        
+        // Очистка при переполнении
+        if (strlen(current_text) > 1500) {
+            lv_textarea_set_text(debug_container, ">>> TERMINAL FLUSHED <<<\n");
+            char formatted[TERMINAL_MSG_LEN + 2];
+            snprintf(formatted, sizeof(formatted), "%s\n", incoming_msg);
+            lv_textarea_add_text(debug_container, formatted);
+        }
+
+        // АВТОСКРОЛЛ С УЧЕТОМ КАСАНИЯ:
+        // Проверяем, не нажал ли пользователь прямо сейчас на экран в зоне терминала.
+        // Если объект сейчас НЕ скроллится пальцем (не в состоянии редактирования/нажатия), 
+        // то принудительно опускаем экран вниз за новыми логами.
+        if (!lv_obj_has_state(debug_container, LV_STATE_PRESSED)) {
+            // Перемещаем невидимый курсор в самый конец
+            lv_textarea_set_cursor_pos(debug_container, LV_TEXTAREA_CURSOR_LAST);
+            // Сдвигаем экран к курсору
+            lv_obj_scroll_to_view(debug_container, LV_ANIM_OFF);
+        }
+    }
+
     lv_timer_handler();
     ui_unlock();
     vTaskDelay(pdMS_TO_TICKS(10));
 }
+
+
+
+
 
 void ui_clear_screen(void)
 {
@@ -591,71 +645,18 @@ void ui_update_container_color(uint8_t state)
 }
 
 void ui_add_debug_line(const char *text) {
-    if (!debug_container) return;
-    if (!text) return;
-    
-    // Lock LVGL
-    ui_lock();
-    
-    // Validate container is still valid
-    if (!lv_obj_is_valid(debug_container)) {
-        ui_unlock();
-        return;
-    }
-    
-    // Determine color based on message content
-    lv_color_t color = lv_color_make(0, 0, 0);  // Default black
-    
-    if (strstr(text, "[ERROR]") != NULL) {
-        color = lv_color_make(255, 0, 0);      // Red
-    } else if (strstr(text, "[WARNING]") != NULL) {
-        color = lv_color_make(255, 255, 0);    // Yellow
-    } else if (strstr(text, "[SUCCESS]") != NULL) {
-        color = lv_color_make(0, 255, 0);      // Green
-    } else if (strstr(text, "[DEBUG]") != NULL) {
-        color = lv_color_make(128, 128, 128);  // Gray
-    } else if (strstr(text, "[INFO]") != NULL) {
-        color = lv_color_make(0, 0, 0);        // Black
-    }
-    
-    // Remove the level tag for cleaner display
-    const char *display_text = text;
-    const char *bracket = strstr(text, "] ");
-    if (bracket) {
-        display_text = bracket + 2;
-    }
-    
-    // SAFE DELETION: Count children and delete if too many
-    int child_count = lv_obj_get_child_cnt(debug_container);
-    
-    // Delete oldest messages if we exceed limit (keep title + max_debug_lines)
-    while (child_count > max_debug_lines + 1) {
-        lv_obj_t *oldest = lv_obj_get_child(debug_container, 1);  // Skip title at index 0
-        if (oldest && lv_obj_is_valid(oldest)) {
-            lv_obj_del(oldest);
-        }
-        child_count = lv_obj_get_child_cnt(debug_container);
-    }
-    
-    // Create new label
-    lv_obj_t *line = lv_label_create(debug_container);
-    if (line) {
-        lv_label_set_text(line, display_text);
-        lv_obj_set_style_text_color(line, color, 0);
-        lv_label_set_long_mode(line, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(line, lv_obj_get_width(debug_container) - 10);
-        lv_obj_set_style_text_font(line, &lv_font_montserrat_12, 0);
-    }
-    
-    // Force layout update
-    lv_obj_update_layout(debug_container);
-    
-    // Scroll to bottom (no animation to avoid issues)
-    lv_obj_scroll_to_y(debug_container, LV_COORD_MAX, LV_ANIM_OFF);
-    
-    // Unlock
-    ui_unlock();
+    if (!text || !terminal_log_queue) return;
+
+    char msg_buf[TERMINAL_MSG_LEN];
+    // Сохраняем строку со всеми префиксами ([ERROR], [INFO]...) как есть
+    snprintf(msg_buf, sizeof(msg_buf), "%s", text);
+
+    // Отправляем в очередь. xQueueSend — атомарная и ультра-быстрая операция.
+    // timeout = 0 означает, что если очередь переполнена, лог просто дропнется,
+    // но робот и сетевой стек НИКОГДА не зависнут.
+    xQueueSend(terminal_log_queue, msg_buf, 0);
 }
+
 
 void ui_set_command_callback(ui_command_callback_t cb)
 {
