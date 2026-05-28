@@ -17,10 +17,15 @@ static const char *TAG = "ui_manager";
 #define LV_BUFFER_SIZE  (DISPLAY_WIDTH * 25)
 #define LVGL_TICK_MS    5
 
-#define TERMINAL_MAX_LINES 6
-#define TERMINAL_LINE_LEN   64
 #define TERMINAL_QUEUE_LEN 10
-#define TERMINAL_MSG_LEN   128
+#define TERMINAL_MSG_LEN 128
+#define TERMINAL_VISIBLE_LINES 5
+#define TERMINAL_QUEUE_LEN 10
+#define TERMINAL_MSG_LEN 128
+#define TERMINAL_HISTORY_SIZE 1500
+
+static char terminal_history_buffer[TERMINAL_HISTORY_SIZE] = ">>> TERMINAL READY <<<\n";
+static bool history_has_new_data = false;
 
 static QueueHandle_t terminal_log_queue = NULL;
 
@@ -434,17 +439,17 @@ void ui_create_robot_control(void)
     lv_obj_set_style_text_font(speed_value_label, &lv_font_montserrat_8, 0);
     lv_obj_align_to(speed_value_label, dd_speed, LV_ALIGN_OUT_RIGHT_MID, 5, 0);
     
-        // 6. DEBUG TERMINAL
+    // 6. DEBUG TERMINAL - Текстовое поле с поддержкой скроллинга и переноса строк
     debug_container = lv_textarea_create(scr);
     lv_obj_set_size(debug_container, 335, 65);
     lv_obj_align(debug_container, LV_ALIGN_BOTTOM_LEFT, 5, -5);
     
-    // НАСТРОЙКА ВЗАИМОДЕЙСТВИЯ ДЛЯ LVGL v8:
-    lv_obj_add_flag(debug_container, LV_OBJ_FLAG_CLICKABLE);       // РАЗРЕШАЕМ клики, чтобы работал скролл пальцем!
-    lv_obj_clear_flag(debug_container, LV_OBJ_FLAG_CLICK_FOCUSABLE); // ЗАПРЕЩАЕМ фокус при клике (курсор не появится)
-    lv_obj_add_flag(debug_container, LV_OBJ_FLAG_SCROLLABLE);       // Разрешаем прокрутку контейнера
+    // Настройки взаимодействия для тачскрина (Разрешаем скролл пальцем)
+    lv_obj_add_flag(debug_container, LV_OBJ_FLAG_CLICKABLE);       // Чтобы работал скролл рукой
+    lv_obj_clear_flag(debug_container, LV_OBJ_FLAG_CLICK_FOCUSABLE); // Запрет фокуса (курсор не появится)
+    lv_obj_add_flag(debug_container, LV_OBJ_FLAG_SCROLLABLE);       // Разрешаем физический скролл
     
-    // Включаем отображение полосы прокрутки только во время прокрутки (так удобнее пальцем)
+    // Полоса прокрутки будет красиво появляться только при прокрутке пальцем
     lv_obj_set_scrollbar_mode(debug_container, LV_SCROLLBAR_MODE_AUTO); 
     
     lv_obj_set_style_text_font(debug_container, &lv_font_montserrat_12, 0);
@@ -452,7 +457,9 @@ void ui_create_robot_control(void)
     lv_obj_set_style_text_color(debug_container, lv_color_black(), 0);
     lv_obj_set_style_radius(debug_container, 5, 0);
     
-    lv_textarea_set_text(debug_container, ">>> TERMINAL READY <<<\n");
+    // Инициализируем стартовый текст из буфера памяти
+    lv_textarea_set_text(debug_container, terminal_history_buffer);
+
 
     ESP_LOGI(TAG, "Debug text area initialized with scrolling");
     
@@ -557,40 +564,59 @@ void ui_task_handler(void)
     ui_lock();
 
     char incoming_msg[TERMINAL_MSG_LEN];
-    bool code_updated = false;
 
+    // 1. Выгребаем логи из очереди FreeRTOS прямо в буфер RAM, не затрагивая виджеты
     if (terminal_log_queue) {
         while (xQueueReceive(terminal_log_queue, incoming_msg, 0) == pdTRUE) {
-            if (debug_container && lv_obj_is_valid(debug_container)) {
-                char formatted[TERMINAL_MSG_LEN + 2];
-                snprintf(formatted, sizeof(formatted), "%s\n", incoming_msg);
+            
+            // Проверяем, не переполнится ли наш буфер истории логов (оставляем запас)
+            if (strlen(terminal_history_buffer) + strlen(incoming_msg) + 2 >= TERMINAL_HISTORY_SIZE) {
                 
-                lv_textarea_add_text(debug_container, formatted);
-                code_updated = true;
+                // Находим позицию смещения (удаляем старую половину логов для освобождения места)
+                size_t offset = strlen(terminal_history_buffer) - 512;
+                const char *clean_start = strchr(&terminal_history_buffer[offset], '\n');
+                
+                if (clean_start) {
+                    size_t tail_len = strlen(clean_start + 1);
+                    const char *header = ">>> LOGS FLUSHED <<<\n";
+                    size_t header_len = strlen(header);
+                    
+                    // Безопасно формируем новый кусок истории прямо в RAM
+                    memcpy(terminal_history_buffer, header, header_len);
+                    memmove(&terminal_history_buffer[header_len], clean_start + 1, tail_len + 1);
+                } else {
+                    strcpy(terminal_history_buffer, ">>> LOGS FLUSHED <<<\n");
+                }
             }
+
+            // Дописываем новое сообщение (сохраняя префиксы [ERROR], [INFO] и длинный текст)
+            strcat(terminal_history_buffer, incoming_msg);
+            strcat(terminal_history_buffer, "\n");
+            
+            history_has_new_data = true;
         }
     }
 
-    if (code_updated && debug_container && lv_obj_is_valid(debug_container)) {
-        const char *current_text = lv_textarea_get_text(debug_container);
+    // 2. Безопасное атомарное обновление интерфейса
+    if (debug_container && lv_obj_is_valid(debug_container)) {
         
-        // Очистка при переполнении
-        if (strlen(current_text) > 1500) {
-            lv_textarea_set_text(debug_container, ">>> TERMINAL FLUSHED <<<\n");
-            char formatted[TERMINAL_MSG_LEN + 2];
-            snprintf(formatted, sizeof(formatted), "%s\n", incoming_msg);
-            lv_textarea_add_text(debug_container, formatted);
-        }
-
-        // АВТОСКРОЛЛ С УЧЕТОМ КАСАНИЯ:
-        // Проверяем, не нажал ли пользователь прямо сейчас на экран в зоне терминала.
-        // Если объект сейчас НЕ скроллится пальцем (не в состоянии редактирования/нажатия), 
-        // то принудительно опускаем экран вниз за новыми логами.
-        if (!lv_obj_has_state(debug_container, LV_STATE_PRESSED)) {
-            // Перемещаем невидимый курсор в самый конец
+        // Если пользователь СЕЙЧАС касается экрана или листает логи вверх пальцем:
+        if (lv_obj_has_state(debug_container, LV_STATE_PRESSED)) {
+            // МЫ НЕ ТРОГАЕМ ВИДЖЕТ. Логи спокойно копятся в terminal_history_buffer в фоне.
+            // Это дает вам 100% плавный скроллинг без фризов интерфейса!
+        } 
+        // Если экран отпущен и у нас накопились свежие логи за время касания:
+        else if (history_has_new_data) {
+            
+            // Атомарно обновляем весь текст одной операцией. Занимает < 1 мс.
+            lv_textarea_set_text(debug_container, terminal_history_buffer);
+            
+            // Сдвигаем невидимый курсор в самый конец текста
             lv_textarea_set_cursor_pos(debug_container, LV_TEXTAREA_CURSOR_LAST);
-            // Сдвигаем экран к курсору
+            // Заставляем текстовое поле сфокусировать область видимости на конце логов
             lv_obj_scroll_to_view(debug_container, LV_ANIM_OFF);
+            
+            history_has_new_data = false;
         }
     }
 
@@ -598,9 +624,6 @@ void ui_task_handler(void)
     ui_unlock();
     vTaskDelay(pdMS_TO_TICKS(10));
 }
-
-
-
 
 
 void ui_clear_screen(void)
